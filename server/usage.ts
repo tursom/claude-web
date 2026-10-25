@@ -1,0 +1,226 @@
+import { randomUUID } from 'node:crypto';
+import type { Query, SDKRateLimitInfo, SDKUsageReport, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { emptyUsage, type Message, type Usage } from '../shared/protocol.js';
+import type { Config } from './config.js';
+import { agentSdk, assertSubscriptionAuth, InputQueue, sdkEnvironment } from './sdk.js';
+
+export interface UsageFrame {
+  type: 'usage';
+  usage: Usage;
+  refreshing: boolean;
+}
+type Listener = (frame: UsageFrame) => void;
+type Reason = 'manual' | 'result' | 'rate_limit';
+
+/** Account-wide cache. Connections and Runtime events drive refreshes; no polling. */
+export class UsageManager {
+  private usage = emptyUsage();
+  private readonly listeners = new Set<Listener>();
+  private inflight?: Promise<void>;
+  private cancelProbe?: () => void;
+  private lastAttempt: number | null = null;
+  private rateLimitStatus?: SDKRateLimitInfo['status'];
+  private resetTimer?: ReturnType<typeof setTimeout>;
+  private closed = false;
+
+  constructor(private readonly config: Config) {}
+
+  connect(listener: Listener): () => void {
+    if (this.closed) return () => {};
+    // Each registration belongs to one connection, even if callbacks are shared.
+    const registered: Listener = (frame) => listener(frame);
+    this.listeners.add(registered);
+    this.send(registered);
+    if (this.stale(5 * 60_000)) void this.startRefresh();
+    return () => {
+      this.listeners.delete(registered);
+    };
+  }
+
+  refresh(reason: Reason = 'manual'): Promise<void> {
+    if (this.closed || !this.listeners.size) return Promise.resolve();
+    if (this.inflight) return this.inflight;
+    if (reason === 'manual' && this.lastAttempt !== null && Date.now() - this.lastAttempt < 10_000)
+      return Promise.resolve();
+    if (reason === 'result' && !this.stale(2 * 60_000)) return Promise.resolve();
+    return this.startRefresh();
+  }
+
+  observe(message: Message): void {
+    if (this.closed) return;
+    if (message.type === 'result') {
+      void this.refresh('result');
+      return;
+    }
+    if (message.type !== 'rate_limit_event') return;
+    const info: SDKRateLimitInfo | undefined = message.rate_limit_info;
+    if (!info || !['allowed', 'allowed_warning', 'rejected'].includes(info.status)) return;
+    const changed = this.rateLimitStatus !== info.status;
+    this.rateLimitStatus = info.status;
+    // SDK resetsAt is epoch seconds; utilization is a fraction (usually 0–1).
+    // Report rows/severity stay verbatim: event utilization is not a report row.
+    const resetsAt =
+      typeof info.resetsAt === 'number' && Number.isFinite(info.resetsAt) ? info.resetsAt * 1000 : undefined;
+    const limited: Usage['limited'] =
+      info.status === 'rejected' && (resetsAt === undefined || resetsAt > Date.now())
+        ? {
+            ...(resetsAt !== undefined ? { resetsAt } : {}),
+            ...(info.errorCode ? { errorCode: info.errorCode } : {}),
+          }
+        : null;
+    if (JSON.stringify(limited) !== JSON.stringify(this.usage.limited)) {
+      this.usage = { ...this.usage, limited };
+      this.scheduleReset();
+      this.broadcast();
+    }
+    if (changed) void this.refresh('rate_limit');
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    clearTimeout(this.resetTimer);
+    this.cancelProbe?.();
+    await this.inflight;
+    this.listeners.clear();
+  }
+
+  private stale(age: number): boolean {
+    return this.usage.fetchedAt === null || Date.now() - this.usage.fetchedAt >= age;
+  }
+
+  private send(listener: Listener): void {
+    // A disconnected socket must not turn a successful probe into a failure.
+    try {
+      listener({ type: 'usage', usage: structuredClone(this.usage), refreshing: !!this.inflight });
+    } catch {
+      /* Connection owner handles send errors. */
+    }
+  }
+
+  private broadcast(): void {
+    for (const listener of this.listeners) this.send(listener);
+  }
+
+  private startRefresh(): Promise<void> {
+    if (this.closed || !this.listeners.size) return Promise.resolve();
+    if (this.inflight) return this.inflight;
+    this.lastAttempt = Date.now();
+    // Install inflight before notifying listeners (which may request a refresh).
+    const task = Promise.resolve()
+      .then(() => this.probe())
+      .finally(() => {
+        this.inflight = undefined;
+        this.broadcast();
+      });
+    this.inflight = task;
+    this.broadcast();
+    return task;
+  }
+
+  private async probe(): Promise<void> {
+    if (this.closed || !this.listeners.size) return;
+    const input = new InputQueue<SDKUserMessage>();
+    const controller = new AbortController();
+    this.cancelProbe = () => controller.abort();
+    const stopped = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener('abort', () => reject(new Error('Usage probe stopped.')), {
+        once: true,
+      });
+    });
+    const timeout = setTimeout(() => controller.abort(), 20_000);
+    let q: Query | undefined;
+    const read = async () => {
+      q = agentSdk.query({
+        prompt: input,
+        options: {
+          cwd: this.config.workspaceRoots[0],
+          pathToClaudeCodeExecutable: this.config.claudePath,
+          persistSession: false,
+          settingSources: [],
+          mcpServers: {},
+          strictMcpConfig: true,
+          tools: [],
+          env: sdkEnvironment(),
+          abortController: controller,
+          stderr: () => {},
+        },
+      });
+      const init = await q.initializationResult();
+      controller.signal.throwIfAborted();
+      assertSubscriptionAuth(init.account?.apiKeySource, init.account?.apiProvider);
+      input.push({
+        type: 'user',
+        uuid: randomUUID(),
+        session_id: '',
+        parent_tool_use_id: null,
+        message: { role: 'user', content: '/usage' },
+      });
+      let report: SDKUsageReport | undefined;
+      let completed = false;
+      for await (const message of q) {
+        controller.signal.throwIfAborted();
+        if (message.type === 'system' && message.subtype === 'init')
+          assertSubscriptionAuth(message.apiKeySource);
+        if (message.type === 'assistant' && message.usage_report) {
+          report = message.usage_report;
+          break;
+        }
+        if (message.type === 'result') {
+          if (message.is_error || message.subtype !== 'success') throw new Error('Usage command failed.');
+          completed = true;
+          break;
+        }
+      }
+      if (!report && !completed) throw new Error('Usage probe ended before a report or result.');
+      const account = await q.accountInfo();
+      controller.signal.throwIfAborted();
+      assertSubscriptionAuth(account.apiKeySource, account.apiProvider);
+      return {
+        account: {
+          ...(account.email ? { email: account.email } : {}),
+          ...(account.subscriptionType ? { subscriptionType: account.subscriptionType } : {}),
+        },
+        limits: report?.rate_limits?.limits ?? null,
+        extraUsage: report?.rate_limits?.extra_usage ?? null,
+        fetchedAt: Date.now(),
+        error: report?.rate_limits ? null : ('unavailable' as const),
+      };
+    };
+    try {
+      const update = await Promise.race([read(), stopped]);
+      if (!this.closed) this.usage = { ...this.usage, ...update };
+    } catch {
+      if (!this.closed) this.usage = { ...this.usage, error: 'failed' };
+    } finally {
+      clearTimeout(timeout);
+      input.close();
+      try {
+        q?.close();
+      } catch {
+        /* Always settle refresh and release timers. */
+      }
+      controller.abort();
+      this.cancelProbe = undefined;
+    }
+  }
+
+  private scheduleReset(): void {
+    clearTimeout(this.resetTimer);
+    const deadline = this.usage.limited?.resetsAt;
+    if (deadline === undefined) return;
+    // Node timers cap at 2^31−1 ms. Re-arm only for a farther reset deadline.
+    this.resetTimer = setTimeout(
+      () => {
+        if (this.closed) return;
+        if (Date.now() < deadline) {
+          this.scheduleReset();
+          return;
+        }
+        this.usage = { ...this.usage, limited: null };
+        this.broadcast();
+      },
+      Math.min(Math.max(0, deadline - Date.now()), 2 ** 31 - 1),
+    );
+    this.resetTimer.unref();
+  }
+}

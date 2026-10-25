@@ -1,0 +1,9 @@
+{
+  "listen": "127.0.0.1:8504",
+  "owner": "me@example.com",
+  "allowedOrigins": ["https://cc.example.com"],
+  "workspaceRoots": ["/root/dev"],
+  "claudePath": "/usr/bin/claude",
+  "maxLiveSessions": 4,
+  "idleCloseMinutes": 30
+}

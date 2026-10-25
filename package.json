@@ -1,0 +1,55 @@
+{
+  "name": "claude-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"tsx watch server/index.ts\" \"vite --host 127.0.0.1\"",
+    "build": "vite build && tsup server/index.ts --format esm --platform node --target node22 --out-dir dist/server --external @anthropic-ai/claude-agent-sdk",
+    "start": "node dist/server/index.js",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "probe:sdk": "tsx scripts/probe-sdk.ts",
+    "test:sdk": "tsx scripts/smoke-sdk.ts",
+    "format": "prettier --write server shared web/src tests scripts *.ts *.json web/index.html web/public/manifest.webmanifest"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.310",
+    "@fastify/multipart": "^9.3.0",
+    "@fastify/static": "^10.1.7",
+    "@fastify/websocket": "^11.2.0",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-dropdown-menu": "^2.1.16",
+    "@radix-ui/react-popover": "^1.1.15",
+    "diff": "^8.0.2",
+    "fastify": "^5.12.0",
+    "lucide-react": "^0.577.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "shiki": "^3.22.0",
+    "ws": "^8.19.0",
+    "zod": "^4.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.0",
+    "@tailwindcss/vite": "^4.2.0",
+    "@types/node": "^22.19.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/ws": "^8.18.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^9.2.0",
+    "prettier": "^3.9.10",
+    "tailwindcss": "^4.2.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}

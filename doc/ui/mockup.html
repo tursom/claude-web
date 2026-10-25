@@ -1,0 +1,1168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-web mockup</title>
+<link rel="stylesheet" href="./tokens.css">
+<style>
+  /* ===== mockup 页面本身（不属于产品） ===== */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--surface-3); color: var(--fg); font-family: var(--ff-sans);
+    font-size: var(--fs-sm); line-height: var(--lh-sm); padding: 32px; }
+  .sheet-title { font-size: 20px; font-weight: 600; margin: 8px 0 4px; }
+  .sheet-note { color: var(--fg-2); margin-bottom: 20px; }
+  .row { display: flex; gap: 32px; flex-wrap: wrap; align-items: flex-start; margin-bottom: 48px; }
+  .caption { font-size: var(--fs-xs); color: var(--fg-2); margin-bottom: 8px; font-weight: 600; }
+  .frame { border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden;
+    background: var(--bg); position: relative; }
+  .desktop { width: 1280px; height: 800px; display: grid;
+    grid-template-columns: var(--sidebar-w) 1fr var(--panel-w); }
+  .mobile { width: 390px; height: 844px; display: flex; flex-direction: column; }
+  .theme-toggle { position: fixed; top: 16px; right: 16px; z-index: 10; }
+
+  /* ===== 通用 ===== */
+  svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.75;
+    stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+  svg.i.s14 { width: 14px; height: 14px; }
+  svg.i.s18 { width: 18px; height: 18px; }
+  svg.i.s20 { width: 20px; height: 20px; }
+  .mono { font-family: var(--ff-mono); }
+  .muted { color: var(--fg-3); }
+  .ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .spin { animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* 按钮 */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px;
+    padding: 0 12px; border-radius: var(--r); border: 1px solid transparent;
+    font: 500 var(--fs-base)/1 var(--ff-sans); cursor: pointer; white-space: nowrap;
+    transition: background var(--motion-dur) var(--motion-ease); }
+  .btn-primary { background: var(--accent); color: var(--accent-fg); }
+  .btn-secondary { background: var(--surface); color: var(--fg); border-color: var(--line-strong); }
+  .btn-danger { background: var(--danger); color: var(--danger-fg); }
+  .btn-danger-text { background: var(--surface); color: var(--danger); border-color: var(--line-strong); }
+  .btn-ghost { background: transparent; color: var(--fg-2); }
+  .btn-icon { width: 32px; padding: 0; background: transparent; color: var(--fg-2); }
+  .btn-lg { height: 44px; font-size: var(--fs-md); }
+
+  /* 状态点与徽标 */
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; position: relative; }
+  .dot.running { background: var(--accent); }
+  .dot.running::after { content: ""; position: absolute; inset: -3px; border-radius: 50%;
+    border: 2px solid var(--accent); opacity: .35; animation: pulse 1.6s var(--motion-ease) infinite; }
+  @keyframes pulse { 0% { transform: scale(.6); opacity: .5 } 100% { transform: scale(1.4); opacity: 0 } }
+  .dot.waiting { background: var(--warn); }
+  .dot.idle { background: var(--fg-3); }
+  .dot.closed { border: 1.5px solid var(--fg-3); }
+  .badge { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px;
+    border-radius: var(--r-full); font-size: var(--fs-xs); font-weight: 500; white-space: nowrap; }
+  .badge.running { background: var(--accent-soft); color: var(--accent); }
+  .badge.waiting { background: var(--warn-soft); color: var(--warn); }
+  .badge.idle { background: var(--surface-2); color: var(--fg-2); }
+  .badge.closed { background: transparent; color: var(--fg-3); border: 1px solid var(--line); }
+  .pill-warn { font-size: var(--fs-xs); line-height: 18px; padding: 0 6px; border-radius: var(--r-sm);
+    background: var(--warn-soft); color: var(--warn); font-weight: 500; white-space: nowrap; }
+
+  /* ===== 侧栏 ===== */
+  .sidebar { background: var(--surface-2); border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; min-height: 0; }
+  .sb-head { height: var(--topbar-h); display: flex; align-items: center; gap: 8px; padding: 0 12px 0 16px; }
+  .app-name { font-weight: 600; font-size: var(--fs-base); flex: 1; }
+  .sb-search { margin: 0 12px 8px; height: 32px; display: flex; align-items: center; gap: 8px;
+    padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r);
+    background: var(--surface); color: var(--fg-3); }
+  .sb-new { margin: 0 12px 12px; }
+  .sb-new .btn { width: 100%; justify-content: flex-start; }
+  .sb-list { flex: 1; overflow: auto; padding: 0 8px 12px; }
+  .group-title { display: flex; align-items: center; gap: 6px; padding: 12px 8px 4px;
+    font-size: var(--fs-xs); color: var(--fg-3); font-weight: 600; }
+  .group-title .count { font-weight: 400; }
+  .group-title:not(.fixed) { cursor: pointer; padding-left: 4px; gap: 4px; }
+  .group-title .chev { color: var(--fg-3); }
+  .group-title:not(.fixed):hover { color: var(--fg-2); }
+
+  /* 拖拽手柄：8px 命中区，常态不可见（边框由栏本身画），悬停/拖动时显示 2px accent 线 */
+  .sidebar, .panel { position: relative; }
+  .resizer { position: absolute; top: 0; bottom: 0; right: -4px; width: 8px; cursor: col-resize; z-index: 2; }
+  .resizer.left { right: auto; left: -4px; }
+  .resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px;
+    background: transparent; transition: background var(--motion-dur) var(--motion-ease); }
+  .resizer:hover::after, .resizer.hover::after { background: var(--accent); }
+
+  .desktop.focus { grid-template-columns: 1fr; height: 520px; }
+  .has-dot { position: relative; }
+  .btn-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--warn); box-shadow: 0 0 0 2px var(--bg); }
+  .s-item { display: grid; grid-template-columns: 8px 1fr auto; column-gap: 10px; row-gap: 2px;
+    align-items: center; padding: 8px 10px; border-radius: var(--r); border: 1px solid transparent;
+    cursor: pointer; }
+  .s-item:hover { background: var(--surface-3); }
+  .s-item.active { background: var(--surface); border-color: var(--line); }
+  .s-title { font-size: var(--fs-sm); color: var(--fg); }
+  .s-time { font-size: var(--fs-xs); color: var(--fg-3); }
+  .s-meta { grid-column: 2 / 4; display: flex; align-items: center; gap: 6px;
+    font-size: var(--fs-xs); color: var(--fg-3); }
+  .sb-foot { border-top: 1px solid var(--line); padding: 4px 6px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .sb-run { display: flex; align-items: center; gap: 8px; padding: 0 10px; color: var(--fg-3); font-size: var(--fs-xs); }
+
+  /* 账号额度 */
+  .meter { height: 4px; border-radius: var(--r-full); background: var(--line); overflow: hidden; }
+  .meter > i { display: block; height: 100%; border-radius: inherit; background: var(--fg-2); }
+  .pct { font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .sev-warning .meter > i { background: var(--warn); }
+  .sev-warning .pct { color: var(--warn); }
+  .sev-critical .meter > i { background: var(--danger); }
+  .sev-critical .pct { color: var(--danger); }
+  .quota { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--r); cursor: pointer; }
+  .quota:hover, .quota.hover { background: var(--surface-3); }
+  .q-line { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--fg-2); }
+  .q-line .sp { flex: 1; }
+  .q-line.danger { color: var(--danger); }
+  .q-row { display: flex; flex-direction: column; gap: 6px; padding: 6px 10px; }
+  .q-row .q-line { font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--fg); }
+  .q-reset { font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--fg-3); }
+  .qp-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px; font-size: var(--fs-sm); }
+  .tag { font-size: var(--fs-xs); line-height: 18px; padding: 0 6px; border-radius: var(--r-sm); background: var(--surface-2);
+    border: 1px solid var(--line); color: var(--fg-2); white-space: nowrap; }
+  .qp-foot { display: flex; align-items: center; gap: 8px; padding: 0 0 0 10px; font-size: var(--fs-xs); color: var(--fg-3); }
+  .qp-foot .sp { flex: 1; }
+  .qp-foot.warn { color: var(--warn); }
+  .notice { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--r-lg); font-size: var(--fs-sm);
+    background: var(--danger-soft); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); }
+  .m-quota { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 12px 16px 34px; border-top: 1px solid var(--line);
+    font-size: var(--fs-sm); color: var(--fg-2); }
+  .m-quota .meter { flex: 1; }
+  .sheet .q-row { padding: 10px 16px; gap: 8px; }
+  .sheet .q-row .q-line { font-size: var(--fs-md); line-height: var(--lh-md); }
+  .sheet .q-reset { font-size: var(--fs-sm); line-height: var(--lh-sm); }
+  .sb-specimen { width: 280px; background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: 12px;
+    padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .st-lbl { font-size: var(--fs-xs); color: var(--fg-3); padding: 8px 10px 0; }
+
+  /* ===== 主区 ===== */
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .topbar { height: var(--topbar-h); flex-shrink: 0; display: flex; align-items: center; gap: 12px;
+    padding: 0 8px 0 20px; border-bottom: 1px solid var(--line); }
+  .tb-title { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .tb-title .t { font-size: var(--fs-base); font-weight: 600; }
+  .tb-title .m { font-size: var(--fs-xs); color: var(--fg-3); display: flex; gap: 6px; align-items: center; }
+  .banner { height: 28px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: var(--warn-soft); color: var(--warn); font-size: var(--fs-xs); }
+
+  .chat { flex: 1; overflow: auto; min-height: 0; }
+  .chat-inner { max-width: var(--chat-max); margin: 0 auto; padding: 24px 24px 16px;
+    display: flex; flex-direction: column; gap: 16px; }
+  .msg-user { align-self: flex-end; max-width: 85%; background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: var(--r-lg); padding: 8px 14px;
+    font-size: var(--fs-chat); line-height: var(--lh-chat); }
+  .prose { font-size: var(--fs-chat); line-height: var(--lh-chat); }
+  .prose p + p, .prose p + ul, .prose ul + p { margin-top: 10px; }
+  .prose ul { padding-left: 20px; }
+  .prose code { font-family: var(--ff-mono); font-size: 0.87em; background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0 4px; }
+  .tools { display: flex; flex-direction: column; gap: 6px; }
+
+  .tool { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); overflow: hidden; }
+  .tool-head { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px; cursor: pointer; }
+  .tool-head .chev { color: var(--fg-3); }
+  .tool-head .ico { color: var(--fg-3); }
+  .tool-name { font-size: var(--fs-sm); font-weight: 600; white-space: nowrap; }
+  .tool-sum { font-family: var(--ff-mono); font-size: var(--fs-code); color: var(--fg-2); flex: 1; }
+  .tool-dur { font-size: var(--fs-xs); color: var(--fg-3); white-space: nowrap; }
+  .st-ok { color: var(--success); }
+  .st-err { color: var(--danger); }
+  .st-run { color: var(--accent); }
+  .st-deny { color: var(--fg-3); }
+  .tool-body { border-top: 1px solid var(--line); background: var(--surface-2); }
+  .tool-body pre { font-family: var(--ff-mono); font-size: var(--fs-code); line-height: var(--lh-code);
+    padding: 10px 12px; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  .tool-body .more { display: block; padding: 6px 12px; border-top: 1px solid var(--line);
+    font-size: var(--fs-xs); color: var(--accent); }
+  .err-line { color: var(--danger); }
+  .tool.error { border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); }
+
+  .thinking { display: flex; align-items: center; gap: 6px; color: var(--fg-3); font-size: var(--fs-sm); cursor: pointer; }
+  .subagent .tool-body { background: var(--surface); padding: 8px 10px 10px 10px; }
+  .subagent .nested { border-left: 2px solid var(--line); padding-left: 10px; display: flex; flex-direction: column; gap: 6px; }
+
+  /* 内联 diff（对话里的 Edit） */
+  .diff { font-family: var(--ff-mono); font-size: var(--fs-code); line-height: var(--lh-code); }
+  .diff .ln { display: grid; grid-template-columns: 36px 36px 14px 1fr; }
+  .diff .ln > span:nth-child(-n+2) { color: var(--fg-3); text-align: right; padding-right: 8px; user-select: none; }
+  .diff .ln > span:nth-child(4) { white-space: pre-wrap; word-break: break-all; padding-right: 12px; }
+  .diff .add { background: var(--diff-add-bg); }
+  .diff .add > span:nth-child(3), .diff .add > span:nth-child(4) { color: var(--diff-add-fg); }
+  .diff .del { background: var(--diff-del-bg); }
+  .diff .del > span:nth-child(3), .diff .del > span:nth-child(4) { color: var(--diff-del-fg); }
+  .diff .hunk { color: var(--fg-3); background: var(--surface-2); padding: 2px 12px; }
+  .diff-wrap { padding: 6px 0; background: var(--surface); }
+
+  .result-line { display: flex; align-items: center; gap: 10px; color: var(--fg-3); font-size: var(--fs-xs); }
+  .result-line::before, .result-line::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+  /* 底部区域：任务条 + 输入框 / 审批卡 */
+  .bottom { flex-shrink: 0; padding: 0 24px 16px; }
+  .bottom-inner { max-width: var(--chat-max); margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
+  .todo-bar { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px;
+    border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface);
+    font-size: var(--fs-sm); color: var(--fg-2); }
+  .todo-bar b { color: var(--fg); font-weight: 600; }
+  .composer { border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--surface); }
+  .composer .ta { padding: 12px 14px 10px; font-size: var(--fs-chat); line-height: var(--lh-chat); color: var(--fg-3); min-height: 48px; }
+  .composer .ta.filled { color: var(--fg); }
+  .atts { display: flex; gap: 10px; padding: 12px 14px 0; }
+  .att { position: relative; width: 56px; height: 56px; border-radius: var(--r); border: 1px solid var(--line);
+    background: var(--surface-2); display: grid; place-items: center; color: var(--fg-3); }
+  .att .rm { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%;
+    background: var(--fg); color: var(--bg); display: grid; place-items: center; }
+  .att .rm svg { width: 11px; height: 11px; stroke-width: 2.5; }
+  .cbar { display: flex; align-items: center; gap: 2px; height: 44px; padding: 0 6px; border-top: 1px solid var(--line); }
+  .cbar-sp { flex: 1; }
+  .stat { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px; border-radius: var(--r);
+    color: var(--fg-2); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .stat.warn { color: var(--warn); }
+  .stat.expired { color: var(--fg-3); }
+  .stat.danger { color: var(--danger); }
+  .ring .track { stroke: var(--line-strong); }
+  .model-pill { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; margin-left: 2px;
+    border-radius: var(--r-full); background: var(--surface-2); color: var(--fg); font-size: var(--fs-sm); white-space: nowrap; }
+  .model-pill .eff { color: var(--fg-3); }
+  .mode-btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px; margin-right: 4px;
+    border-radius: var(--r); color: var(--fg-2); font-size: var(--fs-sm); white-space: nowrap; }
+
+  /* 弹出菜单（向上展开，左缘对齐触发按钮） */
+  .pop { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
+    box-shadow: var(--elev-overlay); padding: 4px; width: 300px; }
+  .pop-label { font-size: var(--fs-xs); color: var(--fg-3); font-weight: 600; padding: 8px 10px 4px; }
+  .pop-item { display: grid; grid-template-columns: 16px 1fr auto; column-gap: 10px; align-items: center;
+    padding: 7px 10px; border-radius: var(--r); font-size: var(--fs-sm); color: var(--fg); }
+  .pop-item > svg:first-child { color: var(--fg-2); }
+  .pop-item .d { grid-column: 2 / 4; color: var(--fg-2); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+  .pop-item .k { color: var(--fg-3); font-size: var(--fs-xs); font-family: var(--ff-mono); }
+  .pop-item.on { background: var(--surface-2); }
+  .pop-sep { height: 1px; background: var(--line); margin: 4px 0; }
+  .pop-search { display: flex; align-items: center; gap: 8px; height: 32px; margin: 2px 2px 4px; padding: 0 8px;
+    border-bottom: 1px solid var(--line); color: var(--fg); font-family: var(--ff-mono); font-size: var(--fs-sm); }
+  .pop .seg { display: flex; margin: 2px 6px 6px; }
+  .pop .seg span { flex: 1; justify-content: center; }
+  .mark-q { color: var(--accent); font-weight: 600; }
+  .tip { background: var(--fg); color: var(--bg); font-size: var(--fs-xs); line-height: var(--lh-xs); padding: 6px 8px;
+    border-radius: var(--r); max-width: 280px; }
+  .send { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center;
+    background: var(--accent); color: var(--accent-fg); border: 0; }
+  .send.stop { background: var(--fg); color: var(--bg); }
+  .send.stop svg { fill: currentColor; }
+  .send.disabled { background: var(--surface-3); color: var(--fg-3); }
+
+  .card { border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--surface);
+    overflow: hidden; }
+  .card.warn { border-color: var(--warn-border); box-shadow: 0 0 0 3px var(--warn-soft); }
+  .card-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px 0; }
+  .card-head .title { font-weight: 600; font-size: var(--fs-base); }
+  .card-head .chip { font-family: var(--ff-mono); font-size: var(--fs-xs); padding: 0 6px; line-height: 20px;
+    border-radius: var(--r-sm); background: var(--surface-2); border: 1px solid var(--line); color: var(--fg-2); }
+  .card-head .idx { margin-left: auto; font-size: var(--fs-xs); color: var(--fg-3); }
+  .card-body { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .card-desc { color: var(--fg-2); font-size: var(--fs-sm); }
+  .cmd { font-family: var(--ff-mono); font-size: var(--fs-code); line-height: var(--lh-code);
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px;
+    white-space: pre-wrap; word-break: break-all; }
+  .card-foot { display: flex; gap: 8px; padding: 0 14px 12px; align-items: center; }
+  .card-foot .grow { flex: 1; }
+  .rule-hint { font-size: var(--fs-xs); color: var(--fg-3); padding: 0 14px 10px; }
+  .rule-hint code { font-family: var(--ff-mono); }
+  .textarea { border: 1px solid var(--line-strong); border-radius: var(--r); padding: 8px 10px; min-height: 64px;
+    color: var(--fg-3); font-size: var(--fs-sm); background: var(--surface); }
+
+  .opt { display: grid; grid-template-columns: 18px 1fr; gap: 10px; padding: 10px 12px; border: 1px solid var(--line);
+    border-radius: var(--r); cursor: pointer; }
+  .opt .mark { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--line-strong); margin-top: 3px; }
+  .opt.multi .mark { border-radius: 4px; }
+  .opt.sel { border-color: var(--accent); background: var(--accent-soft); }
+  .opt.sel .mark { border: 5px solid var(--accent); background: var(--surface); }
+  .opt.multi.sel .mark { border: 0; background: var(--accent); }
+  .opt .l { font-weight: 600; font-size: var(--fs-sm); }
+  .opt .d { color: var(--fg-2); font-size: var(--fs-sm); }
+  .q-text { font-weight: 600; font-size: var(--fs-chat); line-height: var(--lh-chat); }
+  .input { height: 36px; border: 1px solid var(--line-strong); border-radius: var(--r); padding: 0 10px;
+    display: flex; align-items: center; color: var(--fg-3); background: var(--surface); }
+
+  /* ===== 右侧面板 ===== */
+  .panel { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
+  .tabs { height: var(--topbar-h); display: flex; align-items: stretch; gap: 4px; padding: 0 8px 0 12px;
+    border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  .tab { display: flex; align-items: center; padding: 0 10px; font-size: var(--fs-sm); color: var(--fg-2);
+    border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tab.on { color: var(--fg); border-bottom-color: var(--fg); font-weight: 600; }
+  .tabs .sp { flex: 1; }
+  .tabs .btn-icon { align-self: center; }
+  .seg { display: inline-flex; padding: 2px; border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--line); }
+  .seg span { padding: 0 10px; height: 24px; display: inline-flex; align-items: center; border-radius: 4px; font-size: var(--fs-xs); color: var(--fg-2); }
+  .seg span.on { background: var(--surface); color: var(--fg); font-weight: 600; box-shadow: 0 0 0 1px var(--line); }
+  .panel-tools { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .panel-tools .sp { flex: 1; }
+  .file-row { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; font-size: var(--fs-sm); }
+  .file-row.on { background: var(--surface-2); }
+  .file-row .stt { width: 14px; font-family: var(--ff-mono); font-size: var(--fs-xs); font-weight: 600; text-align: center; }
+  .stt.M { color: var(--warn); } .stt.A { color: var(--success); } .stt.D { color: var(--danger); }
+  .file-row .path { font-family: var(--ff-mono); font-size: var(--fs-code); flex: 1; }
+  .file-row .path .dir { color: var(--fg-3); }
+  .plus { color: var(--diff-add-fg); font-family: var(--ff-mono); font-size: var(--fs-xs); }
+  .minus { color: var(--diff-del-fg); font-family: var(--ff-mono); font-size: var(--fs-xs); }
+  .file-list { border-bottom: 1px solid var(--line); padding: 4px 0; }
+  .diff-file-head { position: sticky; top: 0; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px;
+    background: var(--surface); border-bottom: 1px solid var(--line); font-family: var(--ff-mono); font-size: var(--fs-code); }
+  .panel-scroll { flex: 1; overflow: auto; min-height: 0; }
+
+  /* ===== 手机 ===== */
+  .m-status { height: 44px; flex-shrink: 0; }
+  .m-head { height: var(--topbar-h-mobile); flex-shrink: 0; display: flex; align-items: center; gap: 4px; padding: 0 6px 0 16px; }
+  .m-head .app-name { font-size: var(--fs-lg); }
+  .m-head .btn-icon { width: 40px; height: 40px; }
+  .m-search { margin: 0 16px 8px; height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    border-radius: var(--r-lg); background: var(--surface-2); color: var(--fg-3); font-size: var(--fs-md); }
+  .m-list { flex: 1; overflow: auto; }
+  .m-group { font-size: var(--fs-xs); color: var(--fg-3); font-weight: 600; padding: 16px 16px 6px; display: flex; gap: 6px; }
+  .m-group.fold { padding-left: 12px; gap: 4px; align-items: center; }
+  .m-group .chev { color: var(--fg-3); }
+  .m-item { display: grid; grid-template-columns: 8px 1fr auto; column-gap: 12px; row-gap: 2px; align-items: center;
+    padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .m-item .s-title { font-size: var(--fs-md); line-height: var(--lh-md); }
+  .m-item .s-meta { font-size: var(--fs-sm); }
+  .m-topbar { height: var(--topbar-h-mobile); flex-shrink: 0; display: flex; align-items: center; gap: 4px; padding: 0 4px; }
+  .m-topbar .btn-icon { width: 40px; height: 40px; }
+  .m-topbar .tb-title .t { font-size: var(--fs-md); }
+  .m-seg { margin: 0 16px 8px; display: flex; padding: 2px; border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--line); flex-shrink: 0; }
+  .m-seg span { flex: 1; height: 30px; display: grid; place-items: center; border-radius: 4px; font-size: var(--fs-sm); color: var(--fg-2); }
+  .m-seg span.on { background: var(--surface); color: var(--fg); font-weight: 600; box-shadow: 0 0 0 1px var(--line); }
+  .mobile .chat-inner { padding: 12px 16px; }
+  .mobile .bottom { padding: 0 12px 34px; }
+  .mobile .card-foot .btn { flex: 1; height: 44px; font-size: var(--fs-md); }
+  .mobile .composer .ta { font-size: var(--fs-md); }
+  .divider { height: 1px; background: var(--line); flex-shrink: 0; }
+
+  /* 底部弹层 */
+  .scrim { position: absolute; inset: 0; background: rgb(0 0 0 / .32); }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--surface); border-radius: var(--r-xl) var(--r-xl) 0 0;
+    box-shadow: var(--elev-overlay); display: flex; flex-direction: column; max-height: 88%; }
+  .handle { width: 36px; height: 4px; border-radius: 2px; background: var(--line-strong); margin: 8px auto 4px; }
+  .sheet-head { display: flex; align-items: center; padding: 4px 8px 8px 16px; }
+  .sheet-head .t { flex: 1; font-size: var(--fs-lg); font-weight: 600; }
+  .sec-label { font-size: var(--fs-xs); color: var(--fg-3); font-weight: 600; padding: 12px 16px 6px; }
+  .dir-row { display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 16px; font-size: var(--fs-md); border-bottom: 1px solid var(--line); }
+  .dir-row .sub { font-size: var(--fs-sm); color: var(--fg-3); margin-left: auto; }
+  .crumb { display: flex; align-items: center; gap: 4px; padding: 0 16px 8px; font-family: var(--ff-mono); font-size: var(--fs-sm); color: var(--fg-2); flex-wrap: wrap; }
+  .crumb b { color: var(--fg); font-weight: 600; }
+
+  /* 组件表 */
+  .specimen { background: var(--bg); border: 1px solid var(--line-strong); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  .specimen .line { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .specimen .lbl { width: 88px; color: var(--fg-3); font-size: var(--fs-xs); }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="chev-r" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="chev-d" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="chev-u" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+    <symbol id="check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+    <symbol id="terminal" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></symbol>
+    <symbol id="file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></symbol>
+    <symbol id="pencil" viewBox="0 0 24 24"><path d="M21.17 6.81a1 1 0 0 0-3.98-3.98L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z"/></symbol>
+    <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7M12 19V5"/></symbol>
+    <symbol id="arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7M19 12H5"/></symbol>
+    <symbol id="stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></symbol>
+    <symbol id="more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></symbol>
+    <symbol id="folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+    <symbol id="branch" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M6 9v6M18 9a9 9 0 0 1-9 9"/></symbol>
+    <symbol id="bot" viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M12 8V4M8 14h.01M16 14h.01"/></symbol>
+    <symbol id="eye" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="panel-left-close" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></symbol>
+    <symbol id="panel-left-open" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></symbol>
+    <symbol id="panel-right-close" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/><path d="m8 9 3 3-3 3"/></symbol>
+    <symbol id="panel-right-open" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/><path d="m10 15-3-3 3-3"/></symbol>
+    <symbol id="loader" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></symbol>
+    <symbol id="shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
+    <symbol id="list" viewBox="0 0 24 24"><path d="m3 17 2 2 4-4M3 7l2 2 4-4M13 6h8M13 12h8M13 18h8"/></symbol>
+    <symbol id="refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+    <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+    <symbol id="ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></symbol>
+    <symbol id="slash" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 15 15 9"/></symbol>
+    <symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+    <symbol id="code" viewBox="0 0 24 24"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></symbol>
+    <symbol id="shield-check" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="clipboard" viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4M12 16h4M8 11h.01M8 16h.01"/></symbol>
+    <symbol id="image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></symbol>
+    <symbol id="at" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></symbol>
+    <symbol id="circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></symbol>
+    <symbol id="circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="gauge" viewBox="0 0 24 24"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
+  </defs>
+</svg>
+
+<button class="btn btn-secondary theme-toggle" onclick="var r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'"><svg class="i"><use href="#sun"/></svg>切换明暗</button>
+
+<div class="sheet-title">claude-web 页面 mockup</div>
+<div class="sheet-note">高保真参考稿。实现以 ui.md 为准，视觉以本页为准；颜色、字号、间距来自 tokens.css。</div>
+
+<!-- ================= A. 桌面三栏 ================= -->
+<div class="caption">A. 桌面 ≥1280：侧栏 + 对话 + 右侧面板（Diff）· 会话运行中 · 侧栏右边缘为拖拽手柄的悬停态 · yym、yym-doc 两组已折叠</div>
+<div class="row">
+<div class="frame desktop">
+  <!-- 侧栏 -->
+  <aside class="sidebar">
+    <div class="resizer hover" title="拖动调整宽度，双击恢复默认"></div>
+    <div class="sb-head">
+      <span class="app-name">claude-web</span>
+      <button class="btn btn-icon" title="切换明暗"><svg class="i"><use href="#sun"/></svg></button>
+      <button class="btn btn-icon" title="收起侧栏 (Ctrl+B)"><svg class="i"><use href="#panel-left-close"/></svg></button>
+    </div>
+    <div class="sb-search"><svg class="i s14"><use href="#search"/></svg>搜索会话</div>
+    <div class="sb-new"><button class="btn btn-secondary"><svg class="i"><use href="#plus"/></svg>新建会话</button></div>
+    <div class="sb-list">
+      <div class="group-title fixed">待确认 <span class="count">1</span></div>
+      <div class="s-item">
+        <span class="dot waiting"></span><span class="s-title ellipsis">给 WS 协议加断线续传</span><span class="s-time">3 分钟</span>
+        <span class="s-meta">claude-web · feat/resume</span>
+      </div>
+      <div class="group-title"><svg class="i s14 chev"><use href="#chev-d"/></svg>claude-web <span class="count">2</span></div>
+      <div class="s-item active">
+        <span class="dot running"></span><span class="s-title ellipsis">修复失败的单元测试</span><span class="s-time">刚刚</span>
+        <span class="s-meta"><svg class="i s14"><use href="#branch"/></svg>main</span>
+      </div>
+      <div class="s-item">
+        <span class="dot closed"></span><span class="s-title ellipsis">初始化前端项目结构</span><span class="s-time">昨天</span>
+        <span class="s-meta"><svg class="i s14"><use href="#branch"/></svg>main</span>
+      </div>
+      <div class="group-title"><svg class="i s14 chev"><use href="#chev-d"/></svg>go-ws-server <span class="count">2</span></div>
+      <div class="s-item">
+        <span class="dot idle"></span><span class="s-title ellipsis">消息表迁移到 PostgreSQL 的方案</span><span class="s-time">12 分钟</span>
+        <span class="s-meta"><svg class="i s14"><use href="#branch"/></svg>pg-migrate</span>
+      </div>
+      <div class="s-item">
+        <span class="dot closed"></span><span class="s-title ellipsis">排查 QoS1 重复投递</span><span class="s-time">10月21日</span>
+        <span class="s-meta"><svg class="i s14"><use href="#branch"/></svg>main</span>
+      </div>
+      <div class="group-title"><svg class="i s14 chev"><use href="#chev-r"/></svg>yym <span class="count">4</span><span class="dot idle" style="margin-left:2px"></span></div>
+      <div class="group-title"><svg class="i s14 chev"><use href="#chev-r"/></svg>yym-doc <span class="count">7</span></div>
+    </div>
+    <div class="sb-foot">
+      <div class="quota" title="账号额度">
+        <div class="q-line"><svg class="i s14"><use href="#gauge"/></svg>当前时段<span class="sp"></span><span class="pct">34%</span></div>
+        <div class="meter"><i style="width:34%"></i></div>
+      </div>
+      <div class="sb-run"><span class="dot running"></span>2 个运行中 · 上限 4</div>
+    </div>
+  </aside>
+
+  <!-- 主区 -->
+  <main class="main">
+    <div class="topbar">
+      <div class="tb-title">
+        <span class="t ellipsis">修复失败的单元测试</span>
+        <span class="m"><span class="mono">~/dev/claude-web</span>·<svg class="i s14"><use href="#branch"/></svg>main</span>
+      </div>
+      <span class="badge running"><span class="dot running"></span>运行中</span>
+      <button class="btn btn-icon" title="更多"><svg class="i"><use href="#more"/></svg></button>
+    </div>
+    <div class="chat">
+      <div class="chat-inner">
+        <div class="msg-user">跑一下测试，修掉失败的</div>
+
+        <div class="thinking"><svg class="i s14"><use href="#chev-r"/></svg>思考 · 4 秒</div>
+
+        <div class="tools">
+          <div class="tool error">
+            <div class="tool-head">
+              <svg class="i s14 chev"><use href="#chev-d"/></svg>
+              <svg class="i s14 ico"><use href="#terminal"/></svg>
+              <span class="tool-name">Bash</span>
+              <span class="tool-sum ellipsis">npm test</span>
+              <span class="tool-dur">4.2 秒</span>
+              <svg class="i s14 st-err"><use href="#x"/></svg>
+            </div>
+            <div class="tool-body"><pre> PASS  server/paths.test.ts
+ PASS  server/auth.test.ts
+<span class="err-line"> FAIL  server/config.test.ts
+  • parseConfig › 缺省 idleCloseMinutes 时使用默认值
+
+    expected 30, received undefined</span>
+
+Tests:  1 failed, 23 passed, 24 total</pre></div>
+          </div>
+          <div class="tool">
+            <div class="tool-head">
+              <svg class="i s14 ico"><use href="#eye"/></svg>
+              <span class="tool-name">Read</span>
+              <span class="tool-sum ellipsis">server/config.ts</span>
+              <span class="tool-dur">48 行</span>
+              <svg class="i s14 st-ok"><use href="#check"/></svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="prose"><p><code>parseConfig</code> 只合并了文件里出现的字段，缺省字段没有回落到默认值。改成先展开默认配置再覆盖：</p></div>
+
+        <div class="tools">
+          <div class="tool">
+            <div class="tool-head">
+              <svg class="i s14 chev"><use href="#chev-d"/></svg>
+              <svg class="i s14 ico"><use href="#pencil"/></svg>
+              <span class="tool-name">Edit</span>
+              <span class="tool-sum ellipsis">server/config.ts</span>
+              <span class="plus">+3</span><span class="minus">−1</span>
+              <svg class="i s14 st-ok"><use href="#check"/></svg>
+            </div>
+            <div class="tool-body diff-wrap"><div class="diff">
+              <div class="ln"><span>21</span><span>21</span><span></span><span>export function parseConfig(raw: unknown): Config {</span></div>
+              <div class="ln"><span>22</span><span>22</span><span></span><span>  const input = ConfigSchema.parse(raw);</span></div>
+              <div class="ln del"><span>23</span><span></span><span>-</span><span>  return input;</span></div>
+              <div class="ln add"><span></span><span>23</span><span>+</span><span>  return {</span></div>
+              <div class="ln add"><span></span><span>24</span><span>+</span><span>    ...DEFAULTS,</span></div>
+              <div class="ln add"><span></span><span>25</span><span>+</span><span>    ...input };</span></div>
+              <div class="ln"><span>24</span><span>26</span><span></span><span>}</span></div>
+            </div></div>
+          </div>
+          <div class="tool">
+            <div class="tool-head">
+              <svg class="i s14 chev"><use href="#chev-r"/></svg>
+              <svg class="i s14 ico st-run spin"><use href="#loader"/></svg>
+              <span class="tool-name">Bash</span>
+              <span class="tool-sum ellipsis">npm test -- server/config.test.ts</span>
+              <span class="tool-dur">2 秒</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="bottom">
+      <div class="bottom-inner">
+        <div class="todo-bar"><svg class="i s14"><use href="#list"/></svg><b>任务 2/4</b><span class="ellipsis" style="flex:1">当前：重新运行 config 测试</span><svg class="i s14"><use href="#chev-u"/></svg></div>
+        <div class="composer">
+          <div class="ta">输入消息，/ 调用命令，@ 引用文件</div>
+          <div class="cbar">
+            <button class="btn btn-icon" title="添加图片或文件"><svg class="i"><use href="#plus"/></svg></button>
+            <button class="btn btn-icon" title="命令"><svg class="i"><use href="#slash"/></svg></button>
+            <span class="stat" title="提示缓存还剩 60 分钟（1 小时缓存）"><svg class="i"><use href="#clock"/></svg>60m</span>
+            <span class="model-pill">Opus 5.5<span class="eff">高</span></span>
+            <span class="cbar-sp"></span>
+            <span class="mode-btn"><svg class="i"><use href="#shield-check"/></svg>编辑前询问</span>
+            <button class="send stop" title="停止"><svg class="i"><use href="#stop"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- 右侧面板 -->
+  <section class="panel">
+    <div class="resizer left" title="拖动调整宽度，双击恢复默认"></div>
+    <div class="tabs">
+      <span class="tab">文件</span><span class="tab on">Diff</span><span class="sp"></span>
+      <button class="btn btn-icon" title="收起面板 (Ctrl+Alt+B)"><svg class="i"><use href="#panel-right-close"/></svg></button>
+    </div>
+    <div class="panel-tools">
+      <span class="seg"><span class="on">工作区</span><span>暂存区</span></span>
+      <span class="sp"></span>
+      <span class="muted" style="font-size:var(--fs-xs)">3 个文件 <span class="plus">+18</span> <span class="minus">−4</span></span>
+      <button class="btn btn-icon" title="刷新"><svg class="i"><use href="#refresh"/></svg></button>
+    </div>
+    <div class="file-list">
+      <div class="file-row on"><span class="stt M">M</span><span class="path ellipsis"><span class="dir">server/</span>config.ts</span><span class="plus">+3</span><span class="minus">−1</span></div>
+      <div class="file-row"><span class="stt M">M</span><span class="path ellipsis"><span class="dir">server/</span>config.test.ts</span><span class="plus">+9</span><span class="minus">−3</span></div>
+      <div class="file-row"><span class="stt A">A</span><span class="path ellipsis"><span class="dir">server/</span>defaults.ts</span><span class="plus">+6</span><span class="minus">−0</span></div>
+    </div>
+    <div class="panel-scroll">
+      <div class="diff-file-head"><span class="stt M">M</span>server/config.ts</div>
+      <div class="diff" style="padding:4px 0">
+        <div class="hunk">@@ -18,9 +18,11 @@ import { ConfigSchema } from "./schema";</div>
+        <div class="ln"><span>18</span><span>18</span><span></span><span>import { DEFAULTS } from "./defaults";</span></div>
+        <div class="ln"><span>19</span><span>19</span><span></span><span></span></div>
+        <div class="ln"><span>20</span><span>20</span><span></span><span>/** 读取并校验 config.json */</span></div>
+        <div class="ln"><span>21</span><span>21</span><span></span><span>export function parseConfig(raw: unknown): Config {</span></div>
+        <div class="ln"><span>22</span><span>22</span><span></span><span>  const input = ConfigSchema.parse(raw);</span></div>
+        <div class="ln del"><span>23</span><span></span><span>-</span><span>  return input;</span></div>
+        <div class="ln add"><span></span><span>23</span><span>+</span><span>  return {</span></div>
+        <div class="ln add"><span></span><span>24</span><span>+</span><span>    ...DEFAULTS,</span></div>
+        <div class="ln add"><span></span><span>25</span><span>+</span><span>    ...input };</span></div>
+        <div class="ln"><span>24</span><span>26</span><span></span><span>}</span></div>
+        <div class="ln"><span>25</span><span>27</span><span></span><span></span></div>
+        <div class="ln"><span>26</span><span>28</span><span></span><span>export function loadConfig(path: string): Config {</span></div>
+      </div>
+    </div>
+  </section>
+</div>
+</div>
+
+<!-- ================= A2. 两侧都收起 ================= -->
+<div class="caption">A2. 桌面：左侧栏、右侧面板都收起 · 会话空闲（左侧按钮上的琥珀点表示其他会话有待确认）</div>
+<div class="row">
+<div class="frame desktop focus">
+  <main class="main">
+    <div class="topbar" style="padding-left:8px">
+      <button class="btn btn-icon has-dot" title="展开侧栏 (Ctrl+B)"><svg class="i"><use href="#panel-left-open"/></svg><span class="btn-dot"></span></button>
+      <div class="tb-title">
+        <span class="t ellipsis">修复失败的单元测试</span>
+        <span class="m"><span class="mono">~/dev/claude-web</span>·<svg class="i s14"><use href="#branch"/></svg>main</span>
+      </div>
+      <span class="badge idle"><span class="dot idle"></span>空闲</span>
+      <button class="btn btn-icon" title="更多"><svg class="i"><use href="#more"/></svg></button>
+      <button class="btn btn-icon" title="展开面板 (Ctrl+Alt+B)"><svg class="i"><use href="#panel-right-open"/></svg></button>
+    </div>
+    <div class="chat">
+      <div class="chat-inner">
+        <div class="tools">
+          <div class="tool">
+            <div class="tool-head">
+              <svg class="i s14 chev"><use href="#chev-r"/></svg>
+              <svg class="i s14 ico"><use href="#terminal"/></svg>
+              <span class="tool-name">Bash</span>
+              <span class="tool-sum ellipsis">npm test</span>
+              <span class="tool-dur">5.1 秒</span>
+              <svg class="i s14 st-ok"><use href="#check"/></svg>
+            </div>
+          </div>
+        </div>
+        <div class="prose"><p>24 个测试全部通过。改动只有 <code>server/config.ts</code> 一处，另外补了一个缺省值的测试用例。</p></div>
+        <div class="result-line">完成 · 2 分 14 秒 · 8 轮</div>
+      </div>
+    </div>
+    <div class="bottom">
+      <div class="bottom-inner">
+        <div class="composer">
+          <div class="ta">输入消息，/ 调用命令，@ 引用文件</div>
+          <div class="cbar">
+            <button class="btn btn-icon" title="添加图片或文件"><svg class="i"><use href="#plus"/></svg></button>
+            <button class="btn btn-icon" title="命令"><svg class="i"><use href="#slash"/></svg></button>
+            <span class="stat" title="提示缓存还剩 41 分钟（1 小时缓存）"><svg class="i"><use href="#clock"/></svg>41m</span>
+            <span class="stat" title="上下文已用 62%（124k / 200k）"><svg class="i ring" viewBox="0 0 24 24"><circle class="track" cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="9" stroke-dasharray="35 56.55" transform="rotate(-90 12 12)"/></svg>62%</span>
+            <span class="model-pill">Opus 5.5<span class="eff">高</span></span>
+            <span class="cbar-sp"></span>
+            <span class="mode-btn"><svg class="i"><use href="#code"/></svg>自动编辑</span>
+            <button class="send disabled"><svg class="i"><use href="#arrow-up"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</div>
+
+<!-- ================= B/C/D/E. 手机 ================= -->
+<div class="row">
+  <!-- B 会话列表 -->
+  <div>
+    <div class="caption">B. 手机：会话列表</div>
+    <div class="frame mobile">
+      <div class="m-status"></div>
+      <div class="m-head">
+        <span class="app-name">claude-web</span>
+        <button class="btn btn-icon" title="新建会话"><svg class="i s20"><use href="#plus"/></svg></button>
+        <button class="btn btn-icon" title="更多"><svg class="i s20"><use href="#more"/></svg></button>
+      </div>
+      <div class="m-search"><svg class="i"><use href="#search"/></svg>搜索会话</div>
+      <div class="m-list">
+        <div class="m-group">待确认 <span style="font-weight:400">1</span></div>
+        <div class="m-item">
+          <span class="dot waiting"></span><span class="s-title ellipsis">给 WS 协议加断线续传</span><span class="s-time">3 分钟</span>
+          <span class="s-meta">claude-web · feat/resume</span>
+        </div>
+        <div class="m-group fold"><svg class="i s14 chev"><use href="#chev-d"/></svg>claude-web <span style="font-weight:400">2</span></div>
+        <div class="m-item">
+          <span class="dot running"></span><span class="s-title ellipsis">修复失败的单元测试</span><span class="s-time">刚刚</span>
+          <span class="s-meta">main</span>
+        </div>
+        <div class="m-item">
+          <span class="dot closed"></span><span class="s-title ellipsis">初始化前端项目结构</span><span class="s-time">昨天</span>
+          <span class="s-meta">main</span>
+        </div>
+        <div class="m-group fold"><svg class="i s14 chev"><use href="#chev-d"/></svg>go-ws-server <span style="font-weight:400">2</span></div>
+        <div class="m-item">
+          <span class="dot idle"></span><span class="s-title ellipsis">消息表迁移到 PostgreSQL 的方案</span><span class="s-time">12 分钟</span>
+          <span class="s-meta">pg-migrate</span>
+        </div>
+        <div class="m-item">
+          <span class="dot closed"></span><span class="s-title ellipsis">排查 QoS1 重复投递</span><span class="s-time">10月21日</span>
+          <span class="s-meta">main</span>
+        </div>
+        <div class="m-group fold"><svg class="i s14 chev"><use href="#chev-d"/></svg>yym <span style="font-weight:400">1</span></div>
+        <div class="m-item">
+          <span class="dot closed"></span><span class="s-title ellipsis">钱包对账差异梳理</span><span class="s-time">10月20日</span>
+          <span class="s-meta">main</span>
+        </div>
+      </div>
+      <div class="m-quota"><svg class="i"><use href="#gauge"/></svg>当前时段<div class="meter"><i style="width:34%"></i></div><span class="pct">34%</span><svg class="i s14 muted"><use href="#chev-r"/></svg></div>
+    </div>
+  </div>
+
+  <!-- C 对话 + 审批卡 -->
+  <div>
+    <div class="caption">C. 手机：会话页 · 待确认（审批卡替换输入框）</div>
+    <div class="frame mobile">
+      <div class="m-status"></div>
+      <div class="m-topbar">
+        <button class="btn btn-icon" title="返回"><svg class="i s20"><use href="#arrow-left"/></svg></button>
+        <div class="tb-title">
+          <span class="t ellipsis">给 WS 协议加断线续传</span>
+          <span class="m"><span class="dot waiting"></span>待确认 · <span class="mono ellipsis">~/dev/claude-web</span></span>
+        </div>
+        <button class="btn btn-icon" title="更多"><svg class="i s20"><use href="#more"/></svg></button>
+      </div>
+      <div class="m-seg"><span class="on">对话</span><span>文件</span><span>Diff</span></div>
+      <div class="divider"></div>
+      <div class="chat">
+        <div class="chat-inner">
+          <div class="msg-user">实现 5.2 节的订阅规则，写完跑一遍测试</div>
+          <div class="prose"><p>订阅逻辑已经写完：epoch 一致时按 <code>afterSeq</code> 补发，否则返回 snapshot。依赖有变化，先安装再跑测试。</p></div>
+          <div class="tools">
+            <div class="tool">
+              <div class="tool-head">
+                <svg class="i s14 chev"><use href="#chev-r"/></svg>
+                <svg class="i s14 ico"><use href="#pencil"/></svg>
+                <span class="tool-name">Edit</span>
+                <span class="tool-sum ellipsis">server/ws.ts</span>
+                <span class="plus">+42</span><span class="minus">−6</span>
+                <svg class="i s14 st-ok"><use href="#check"/></svg>
+              </div>
+            </div>
+            <div class="tool">
+              <div class="tool-head">
+                <svg class="i s14 chev"><use href="#chev-r"/></svg>
+                <svg class="i s14 ico"><use href="#pencil"/></svg>
+                <span class="tool-name">Edit</span>
+                <span class="tool-sum ellipsis">server/runtime.ts</span>
+                <span class="plus">+18</span><span class="minus">−2</span>
+                <svg class="i s14 st-ok"><use href="#check"/></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="bottom">
+        <div class="card warn">
+          <div class="card-head">
+            <svg class="i" style="color:var(--warn)"><use href="#alert"/></svg>
+            <span class="title">需要确认</span><span class="chip">Bash</span>
+            <span class="idx">1 / 1</span>
+          </div>
+          <div class="card-body">
+            <div class="cmd">pnpm install &amp;&amp; pnpm test</div>
+            <div class="card-desc">安装依赖并运行全部测试</div>
+          </div>
+          <div class="card-foot">
+            <button class="btn btn-danger-text">拒绝</button>
+            <button class="btn btn-secondary">始终允许</button>
+            <button class="btn btn-primary">允许</button>
+          </div>
+          <div class="rule-hint">始终允许将添加规则 <code>Bash(pnpm install:*)</code></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- D 提问卡 -->
+  <div>
+    <div class="caption">D. 手机：Claude 提问（提问卡替换输入框）</div>
+    <div class="frame mobile">
+      <div class="m-status"></div>
+      <div class="m-topbar">
+        <button class="btn btn-icon" title="返回"><svg class="i s20"><use href="#arrow-left"/></svg></button>
+        <div class="tb-title">
+          <span class="t ellipsis">消息表迁移到 PostgreSQL 的方案</span>
+          <span class="m"><span class="dot waiting"></span>待回答 · <span class="mono ellipsis">~/dev/go-ws-server</span></span>
+        </div>
+        <button class="btn btn-icon" title="更多"><svg class="i s20"><use href="#more"/></svg></button>
+      </div>
+      <div class="m-seg"><span class="on">对话</span><span>文件</span><span>Diff</span></div>
+      <div class="divider"></div>
+      <div class="chat">
+        <div class="chat-inner">
+          <div class="msg-user">按设计文档把消息表迁到 PG</div>
+          <div class="tools">
+            <div class="tool subagent">
+              <div class="tool-head">
+                <svg class="i s14 chev"><use href="#chev-d"/></svg>
+                <svg class="i s14 ico"><use href="#bot"/></svg>
+                <span class="tool-name">Agent</span>
+                <span class="tool-sum ellipsis">查找消息表的读写点</span>
+                <svg class="i s14 st-ok"><use href="#check"/></svg>
+              </div>
+              <div class="tool-body"><div class="nested">
+                <div class="tool"><div class="tool-head"><svg class="i s14 ico"><use href="#search"/></svg><span class="tool-name">Grep</span><span class="tool-sum ellipsis">messages\.</span><span class="tool-dur">14 处</span></div></div>
+                <div class="tool"><div class="tool-head"><svg class="i s14 ico"><use href="#eye"/></svg><span class="tool-name">Read</span><span class="tool-sum ellipsis">store/mongo.go</span></div></div>
+              </div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="bottom">
+        <div class="card">
+          <div class="card-head">
+            <svg class="i" style="color:var(--accent)"><use href="#help"/></svg>
+            <span class="title">Claude 提问</span><span class="idx">1 / 2</span>
+          </div>
+          <div class="card-body">
+            <div class="q-text">迁移期间旧数据怎么处理？</div>
+            <div class="opt sel"><span class="mark"></span><div><div class="l">双写一段时间后切读</div><div class="d">新旧库同时写，校验一致后切换读路径</div></div></div>
+            <div class="opt"><span class="mark"></span><div><div class="l">停机一次性迁移</div><div class="d">短暂停写，导入后切换</div></div></div>
+            <div class="input">其他，直接输入…</div>
+          </div>
+          <div class="card-foot">
+            <button class="btn btn-ghost">不回答</button>
+            <button class="btn btn-primary">下一题</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- E 新建会话 -->
+  <div>
+    <div class="caption">E. 手机：新建会话（底部弹层）</div>
+    <div class="frame mobile">
+      <div class="m-status"></div>
+      <div class="m-head"><span class="app-name">claude-web</span></div>
+      <div class="scrim"></div>
+      <div class="sheet">
+        <div class="handle"></div>
+        <div class="sheet-head"><span class="t">新建会话</span><button class="btn btn-icon" title="关闭"><svg class="i s20"><use href="#x"/></svg></button></div>
+        <div class="sec-label">最近项目</div>
+        <div class="dir-row"><svg class="i s18 muted"><use href="#folder"/></svg>claude-web<span class="sub mono">~/dev</span></div>
+        <div class="dir-row"><svg class="i s18 muted"><use href="#folder"/></svg>go-ws-server<span class="sub mono">~/dev</span></div>
+        <div class="sec-label">浏览目录</div>
+        <div class="crumb">/root/dev <svg class="i s14"><use href="#chev-r"/></svg> <b>work</b></div>
+        <div class="dir-row"><svg class="i s18 muted"><use href="#folder"/></svg>yym<svg class="i s14 muted" style="margin-left:auto"><use href="#chev-r"/></svg></div>
+        <div class="dir-row"><svg class="i s18 muted"><use href="#folder"/></svg>yym-doc<svg class="i s14 muted" style="margin-left:auto"><use href="#chev-r"/></svg></div>
+        <div class="sec-label">权限模式</div>
+        <div class="m-seg" style="margin-bottom:0"><span class="on">编辑前询问</span><span>自动编辑</span><span>计划模式</span></div>
+        <div style="padding:16px 16px 34px"><button class="btn btn-primary btn-lg" style="width:100%">在 ~/dev/work 创建</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= F. 输入框 ================= -->
+<div class="caption">F. 输入框：附件、状态项、弹出菜单（菜单实际向上弹出，这里平铺展示）</div>
+<div class="row">
+  <div class="specimen" style="width:760px">
+    <div class="caption" style="margin:0">带图片附件、@ 引用；缓存快过期、上下文偏高（琥珀色）</div>
+    <div class="composer">
+      <div class="atts">
+        <div class="att"><svg class="i s20"><use href="#image"/></svg><span class="rm"><svg class="i"><use href="#x"/></svg></span></div>
+        <div class="att"><svg class="i s20"><use href="#image"/></svg><span class="rm"><svg class="i"><use href="#x"/></svg></span></div>
+      </div>
+      <div class="ta filled">这两张是手机上的截图，发送按钮被挤到第二行了，参考 @web/src/components/Composer.tsx 修一下</div>
+      <div class="cbar">
+        <button class="btn btn-icon"><svg class="i"><use href="#plus"/></svg></button>
+        <button class="btn btn-icon"><svg class="i"><use href="#slash"/></svg></button>
+        <span class="stat warn"><svg class="i"><use href="#clock"/></svg>4m</span>
+        <span class="stat warn"><svg class="i ring" viewBox="0 0 24 24"><circle class="track" cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="9" stroke-dasharray="47 56.55" transform="rotate(-90 12 12)"/></svg>83%</span>
+        <span class="model-pill">Sonnet 5.5<span class="eff">中</span></span>
+        <span class="cbar-sp"></span>
+        <span class="mode-btn"><svg class="i"><use href="#clipboard"/></svg>计划模式</span>
+        <button class="send"><svg class="i"><use href="#arrow-up"/></svg></button>
+      </div>
+    </div>
+    <div class="line"><span class="lbl">缓存状态</span>
+      <span class="stat"><svg class="i"><use href="#clock"/></svg>58m</span>
+      <span class="stat warn"><svg class="i"><use href="#clock"/></svg>4m</span>
+      <span class="stat warn"><svg class="i"><use href="#clock"/></svg>&lt;1m</span>
+      <span class="stat expired"><svg class="i"><use href="#clock"/></svg>已过期</span>
+    </div>
+    <div class="line"><span class="lbl">悬停提示</span>
+      <span class="tip">提示缓存还剩 58 分钟（1 小时缓存）。过期后，下一条消息要重新写入缓存，消耗的用量更多。</span>
+    </div>
+    <div class="line"><span class="lbl">手机 390</span>
+      <div class="composer" style="width:366px">
+        <div class="ta" style="font-size:var(--fs-md)">输入消息</div>
+        <div class="cbar">
+          <button class="btn btn-icon" style="width:40px;height:40px"><svg class="i s20"><use href="#plus"/></svg></button>
+          <span class="stat"><svg class="i"><use href="#clock"/></svg>58m</span>
+          <span class="model-pill">Opus 5.5</span>
+          <span class="cbar-sp"></span>
+          <button class="btn btn-icon" style="width:40px;height:40px"><svg class="i s20"><use href="#shield-check"/></svg></button>
+          <button class="send disabled"><svg class="i"><use href="#arrow-up"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <div class="caption" style="margin:0">「+」菜单</div>
+    <div class="pop" style="width:260px">
+      <div class="pop-item"><svg class="i"><use href="#image"/></svg>上传图片<span class="k"></span><span class="d">也可以直接粘贴或拖进输入框</span></div>
+      <div class="pop-item"><svg class="i"><use href="#at"/></svg>引用文件<span class="k">@</span></div>
+    </div>
+    <div class="caption" style="margin:0">权限模式菜单</div>
+    <div class="pop" style="width:260px">
+      <div class="pop-item on"><svg class="i"><use href="#shield-check"/></svg>编辑前询问<svg class="i s14"><use href="#check"/></svg><span class="d">改文件或执行命令前都会询问</span></div>
+      <div class="pop-item"><svg class="i"><use href="#code"/></svg>自动编辑<span></span><span class="d">改文件不再询问，执行命令仍会询问</span></div>
+      <div class="pop-item"><svg class="i"><use href="#clipboard"/></svg>计划模式<span></span><span class="d">只读分析，先给方案，不做改动</span></div>
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <div class="caption" style="margin:0">模型与思考强度</div>
+    <div class="pop">
+      <div class="pop-label">模型</div>
+      <div class="pop-item on"><span></span>Opus 5.5<svg class="i s14"><use href="#check"/></svg><span class="d">能力最强，适合复杂任务</span></div>
+      <div class="pop-item"><span></span>Sonnet 5.5<span></span><span class="d">日常编码，速度与能力均衡</span></div>
+      <div class="pop-item"><span></span>Haiku 5.5<span></span><span class="d">最快，适合简单任务</span></div>
+      <div class="pop-sep"></div>
+      <div class="pop-label">思考强度</div>
+      <span class="seg"><span>低</span><span>中</span><span class="on">高</span><span>超高</span><span>最高</span></span>
+    </div>
+    <div class="caption" style="margin:0">命令（点 / 按钮，或在空输入框里输入 /）</div>
+    <div class="pop">
+      <div class="pop-search">/re</div>
+      <div class="pop-item on"><span></span><span><span class="mark-q">/re</span>view</span><span class="k"></span><span class="d">审查当前分支的改动</span></div>
+      <div class="pop-item"><span></span><span><span class="mark-q">/re</span>lease-notes</span><span class="k">[版本]</span><span class="d">生成发布说明（项目命令）</span></div>
+      <div class="pop-item"><span></span><span>/security-<span class="mark-q">re</span>view</span><span class="k"></span><span class="d">安全审查待提交的改动</span></div>
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <div class="caption" style="margin:0">引用文件（输入 @ 或从「+」进入）</div>
+    <div class="pop">
+      <div class="pop-search">@compo</div>
+      <div class="pop-item on"><svg class="i s14"><use href="#file"/></svg><span class="ellipsis"><span class="muted">web/src/components/</span><span class="mark-q">Compo</span>ser.tsx</span><span></span></div>
+      <div class="pop-item"><svg class="i s14"><use href="#file"/></svg><span class="ellipsis"><span class="muted">web/src/components/</span><span class="mark-q">Compo</span>serBar.tsx</span><span></span></div>
+      <div class="pop-item"><svg class="i s14"><use href="#folder"/></svg><span class="ellipsis"><span class="muted">web/src/</span><span class="mark-q">compo</span>nents/</span><span></span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= G. 账号额度 ================= -->
+<div class="caption">G. 账号额度：侧栏底部各状态、额度浮层、输入框里的提醒、手机底部弹层（数值为示意，行和组以服务端返回为准）</div>
+<div class="row">
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <div class="caption" style="margin:0">侧栏底部额度块（宽 280）</div>
+    <div class="sb-specimen">
+      <div class="st-lbl">常态 · 悬停</div>
+      <div class="quota hover">
+        <div class="q-line"><svg class="i s14"><use href="#gauge"/></svg>当前时段<span class="sp"></span><span class="pct">34%</span></div>
+        <div class="meter"><i style="width:34%"></i></div>
+      </div>
+      <div class="st-lbl">severity = warning</div>
+      <div class="quota sev-warning">
+        <div class="q-line"><svg class="i s14"><use href="#gauge"/></svg>当前时段<span class="sp"></span><span class="pct">86%</span></div>
+        <div class="meter"><i style="width:86%"></i></div>
+      </div>
+      <div class="st-lbl">severity = critical</div>
+      <div class="quota sev-critical">
+        <div class="q-line"><svg class="i s14"><use href="#gauge"/></svg>所有模型<span class="sp"></span><span class="pct">97%</span></div>
+        <div class="meter"><i style="width:97%"></i></div>
+      </div>
+      <div class="st-lbl">已达上限</div>
+      <div class="quota sev-critical">
+        <div class="q-line danger"><svg class="i s14"><use href="#gauge"/></svg>已达上限<span class="sp"></span>14:30 恢复</div>
+        <div class="meter"><i style="width:100%"></i></div>
+      </div>
+      <div class="st-lbl">首次读取中</div>
+      <div class="quota">
+        <div class="q-line" style="color:var(--fg-3)"><svg class="i s14 spin"><use href="#loader"/></svg>额度读取中…</div>
+      </div>
+      <div class="st-lbl">读不到额度</div>
+      <div class="quota">
+        <div class="q-line" style="color:var(--fg-3)"><svg class="i s14"><use href="#gauge"/></svg>额度不可用</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <div class="caption" style="margin:0">额度浮层（点侧栏额度块或工具栏「额度」项，向上弹出）</div>
+    <div class="pop" style="width:300px">
+      <div class="qp-head"><span class="ellipsis" style="flex:1">me@example.com</span><span class="tag">Max</span></div>
+      <div class="pop-label">时段</div>
+      <div class="q-row">
+        <div class="q-line">当前时段<span class="sp"></span><span class="pct">34%</span></div>
+        <div class="meter"><i style="width:34%"></i></div>
+        <div class="q-reset">2 小时 41 分后重置</div>
+      </div>
+      <div class="pop-label">每周</div>
+      <div class="q-row">
+        <div class="q-line">所有模型<span class="sp"></span><span class="pct">61%</span></div>
+        <div class="meter"><i style="width:61%"></i></div>
+        <div class="q-reset">周四 09:00 重置</div>
+      </div>
+      <div class="q-row sev-warning">
+        <div class="q-line">Opus<span class="sp"></span><span class="pct">82%</span></div>
+        <div class="meter"><i style="width:82%"></i></div>
+        <div class="q-reset">周四 09:00 重置</div>
+      </div>
+      <div class="pop-sep"></div>
+      <div class="q-row">
+        <div class="q-line">额外用量<span class="sp"></span><span class="pct">$12.40 / $50.00</span></div>
+        <div class="meter"><i style="width:25%"></i></div>
+      </div>
+      <div class="pop-sep"></div>
+      <div class="qp-foot">更新于 2 分钟前<span class="sp"></span><button class="btn btn-icon" title="刷新"><svg class="i"><use href="#refresh"/></svg></button></div>
+    </div>
+    <div class="caption" style="margin:0">刷新失败（保留旧数据）</div>
+    <div class="pop" style="width:300px">
+      <div class="qp-foot warn">更新失败，显示的是 12 分钟前的数据<span class="sp"></span><button class="btn btn-icon" title="刷新"><svg class="i"><use href="#refresh"/></svg></button></div>
+    </div>
+    <div class="caption" style="margin:0">读不到额度</div>
+    <div class="pop" style="width:300px">
+      <div style="padding:8px 10px;color:var(--fg-2)">当前登录方式读不到额度。用订阅账号登录 Claude Code 后才能显示。</div>
+    </div>
+  </div>
+
+  <div class="specimen" style="width:560px">
+    <div class="caption" style="margin:0">额度偏高：工具栏出现「额度」项</div>
+    <div class="composer">
+      <div class="ta">输入消息，/ 调用命令，@ 引用文件</div>
+      <div class="cbar">
+        <button class="btn btn-icon"><svg class="i"><use href="#plus"/></svg></button>
+        <button class="btn btn-icon"><svg class="i"><use href="#slash"/></svg></button>
+        <span class="stat"><svg class="i"><use href="#clock"/></svg>41m</span>
+        <span class="stat warn"><svg class="i"><use href="#gauge"/></svg>额度 86%</span>
+        <span class="model-pill">Opus 5.5<span class="eff">高</span></span>
+        <span class="cbar-sp"></span>
+        <span class="mode-btn"><svg class="i"><use href="#shield-check"/></svg>编辑前询问</span>
+        <button class="send disabled"><svg class="i"><use href="#arrow-up"/></svg></button>
+      </div>
+    </div>
+    <div class="line"><span class="lbl">悬停提示</span><span class="tip">当前时段额度已用 86%，2 小时 41 分后重置。</span></div>
+    <div class="caption" style="margin:4px 0 0">已达上限：输入框上方出现提示，所有会话都显示</div>
+    <div class="notice"><svg class="i"><use href="#alert"/></svg>额度已用完，14:30 后恢复。</div>
+    <div class="composer">
+      <div class="ta">输入消息，/ 调用命令，@ 引用文件</div>
+      <div class="cbar">
+        <button class="btn btn-icon"><svg class="i"><use href="#plus"/></svg></button>
+        <button class="btn btn-icon"><svg class="i"><use href="#slash"/></svg></button>
+        <span class="stat warn"><svg class="i"><use href="#clock"/></svg>3m</span>
+        <span class="stat danger"><svg class="i"><use href="#gauge"/></svg>额度 100%</span>
+        <span class="model-pill">Opus 5.5<span class="eff">高</span></span>
+        <span class="cbar-sp"></span>
+        <span class="mode-btn"><svg class="i"><use href="#shield-check"/></svg>编辑前询问</span>
+        <button class="send disabled"><svg class="i"><use href="#arrow-up"/></svg></button>
+      </div>
+    </div>
+    <div class="caption" style="margin:4px 0 0">订阅额度用完、需要购买额外用量（credits_required）</div>
+    <div class="notice"><svg class="i"><use href="#alert"/></svg>订阅额度已用完，需要在 claude.ai 购买额外用量后才能继续。</div>
+  </div>
+
+  <div>
+    <div class="caption">手机：点列表底部额度条打开</div>
+    <div class="frame mobile">
+      <div class="m-status"></div>
+      <div class="m-head"><span class="app-name">claude-web</span></div>
+      <div class="scrim"></div>
+      <div class="sheet">
+        <div class="handle"></div>
+        <div class="sheet-head"><span class="t">账号额度</span><button class="btn btn-icon" title="关闭"><svg class="i s20"><use href="#x"/></svg></button></div>
+        <div class="qp-head" style="padding:0 16px 4px;font-size:var(--fs-md)"><span class="ellipsis" style="flex:1">me@example.com</span><span class="tag">Max</span></div>
+        <div class="sec-label">时段</div>
+        <div class="q-row">
+          <div class="q-line">当前时段<span class="sp"></span><span class="pct">34%</span></div>
+          <div class="meter"><i style="width:34%"></i></div>
+          <div class="q-reset">2 小时 41 分后重置</div>
+        </div>
+        <div class="sec-label">每周</div>
+        <div class="q-row">
+          <div class="q-line">所有模型<span class="sp"></span><span class="pct">61%</span></div>
+          <div class="meter"><i style="width:61%"></i></div>
+          <div class="q-reset">周四 09:00 重置</div>
+        </div>
+        <div class="q-row sev-warning">
+          <div class="q-line">Opus<span class="sp"></span><span class="pct">82%</span></div>
+          <div class="meter"><i style="width:82%"></i></div>
+          <div class="q-reset">周四 09:00 重置</div>
+        </div>
+        <div class="divider" style="margin:6px 0"></div>
+        <div class="q-row">
+          <div class="q-line">额外用量<span class="sp"></span><span class="pct">$12.40 / $50.00</span></div>
+          <div class="meter"><i style="width:25%"></i></div>
+        </div>
+        <div class="divider" style="margin-top:6px"></div>
+        <div class="qp-foot" style="padding:4px 4px 34px 16px;font-size:var(--fs-sm)">更新于 2 分钟前<span class="sp"></span><button class="btn btn-icon" style="width:40px;height:40px" title="刷新"><svg class="i s20"><use href="#refresh"/></svg></button></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= H. 组件状态 ================= -->
+<div class="caption">H. 组件状态</div>
+<div class="row">
+  <div class="specimen" style="width:620px">
+    <div class="line"><span class="lbl">会话状态</span>
+      <span class="badge running"><span class="dot running"></span>运行中</span>
+      <span class="badge waiting"><span class="dot waiting"></span>待确认</span>
+      <span class="badge idle"><span class="dot idle"></span>空闲</span>
+      <span class="badge closed"><span class="dot closed"></span>未运行</span>
+    </div>
+    <div class="line"><span class="lbl">按钮</span>
+      <button class="btn btn-primary">允许</button>
+      <button class="btn btn-secondary">始终允许</button>
+      <button class="btn btn-danger-text">拒绝</button>
+      <button class="btn btn-danger">确认拒绝</button>
+      <button class="btn btn-ghost">取消</button>
+      <button class="btn btn-icon"><svg class="i"><use href="#more"/></svg></button>
+    </div>
+    <div class="line"><span class="lbl">发送按钮</span>
+      <button class="send disabled"><svg class="i"><use href="#arrow-up"/></svg></button>
+      <span class="muted" style="font-size:var(--fs-xs)">空</span>
+      <button class="send"><svg class="i"><use href="#arrow-up"/></svg></button>
+      <span class="muted" style="font-size:var(--fs-xs)">可发送</span>
+      <button class="send stop"><svg class="i"><use href="#stop"/></svg></button>
+      <span class="muted" style="font-size:var(--fs-xs)">运行中且输入为空</span>
+    </div>
+    <div class="line"><span class="lbl">工具行</span>
+      <div class="tools" style="flex:1">
+        <div class="tool"><div class="tool-head"><svg class="i s14 ico st-run spin"><use href="#loader"/></svg><span class="tool-name">Bash</span><span class="tool-sum ellipsis">go test ./...</span><span class="tool-dur">12 秒</span></div></div>
+        <div class="tool"><div class="tool-head"><svg class="i s14 ico"><use href="#terminal"/></svg><span class="tool-name">Bash</span><span class="tool-sum ellipsis">go vet ./...</span><span class="tool-dur">1.1 秒</span><svg class="i s14 st-ok"><use href="#check"/></svg></div></div>
+        <div class="tool error"><div class="tool-head"><svg class="i s14 ico"><use href="#terminal"/></svg><span class="tool-name">Bash</span><span class="tool-sum ellipsis">make lint</span><span class="tool-dur">退出码 2</span><svg class="i s14 st-err"><use href="#x"/></svg></div></div>
+        <div class="tool"><div class="tool-head"><svg class="i s14 ico"><use href="#terminal"/></svg><span class="tool-name">Bash</span><span class="tool-sum ellipsis" style="text-decoration:line-through">rm -rf dist</span><span class="tool-dur">已拒绝</span><svg class="i s14 st-deny"><use href="#ban"/></svg></div></div>
+      </div>
+    </div>
+    <div class="line"><span class="lbl">连接横幅</span>
+      <div class="banner" style="flex:1;border-radius:var(--r)"><svg class="i s14 spin"><use href="#loader"/></svg>连接已断开，正在重连…</div>
+    </div>
+    <div class="line"><span class="lbl">结束行</span><div class="result-line" style="flex:1">完成 · 2 分 14 秒 · 8 轮</div></div>
+  </div>
+
+  <div class="specimen" style="width:520px">
+    <div class="caption" style="margin:0">审批卡 · 拒绝展开态（桌面）</div>
+    <div class="card warn">
+      <div class="card-head">
+        <svg class="i" style="color:var(--warn)"><use href="#alert"/></svg>
+        <span class="title">需要确认</span><span class="chip">Edit</span><span class="idx">2 / 2</span>
+      </div>
+      <div class="card-body">
+        <div class="mono" style="font-size:var(--fs-code);color:var(--fg-2)">server/auth.ts</div>
+        <div class="diff" style="border:1px solid var(--line);border-radius:var(--r);overflow:hidden">
+          <div class="ln del"><span>14</span><span></span><span>-</span><span>  if (email !== cfg.owner) return deny(res);</span></div>
+          <div class="ln add"><span></span><span>14</span><span>+</span><span>  if (!email) return next();</span></div>
+        </div>
+        <div class="textarea" style="color:var(--fg)">不要放行没有 Remote-Email 的请求，保持 403</div>
+      </div>
+      <div class="card-foot">
+        <span class="grow"></span>
+        <button class="btn btn-ghost">取消</button>
+        <button class="btn btn-danger">确认拒绝</button>
+      </div>
+    </div>
+    <div class="caption" style="margin:0">任务条 · 展开态</div>
+    <div class="card">
+      <div class="card-head"><svg class="i s14"><use href="#list"/></svg><span class="title" style="font-size:var(--fs-sm)">任务 2/4</span><svg class="i s14 muted" style="margin-left:auto"><use href="#chev-d"/></svg></div>
+      <div class="card-body" style="gap:6px">
+        <div style="display:flex;gap:8px;align-items:center;color:var(--fg-3)"><svg class="i s14 st-ok"><use href="#circle-check"/></svg><span style="text-decoration:line-through">运行测试定位失败用例</span></div>
+        <div style="display:flex;gap:8px;align-items:center;color:var(--fg-3)"><svg class="i s14 st-ok"><use href="#circle-check"/></svg><span style="text-decoration:line-through">修复 parseConfig 缺省值</span></div>
+        <div style="display:flex;gap:8px;align-items:center;font-weight:600"><svg class="i s14 st-run spin"><use href="#loader"/></svg>重新运行 config 测试</div>
+        <div style="display:flex;gap:8px;align-items:center;color:var(--fg-2)"><svg class="i s14 muted"><use href="#circle"/></svg>运行全部测试</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

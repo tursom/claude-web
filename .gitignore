@@ -1,0 +1,8 @@
+node_modules/
+dist/
+config.json
+test-results/
+playwright-report/
+artifacts/
+.pi-web/
+*.log

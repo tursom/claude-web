@@ -1,0 +1,149 @@
+/*
+ * claude-web 设计 token。实现时原样复制到 web/src/styles/tokens.css。
+ * 组件里只能用这些变量（经 ui.md 第 2 节映射成 Tailwind 类），不允许出现裸色值。
+ * 命名刻意避开 Tailwind v4 的主题命名空间（--color-* / --text-* / --font-* / --radius-* / --shadow-* / --ease-*）。
+ * 主题：<html data-theme="light|dark">；没有 data-theme 时跟随系统。
+ */
+
+:root {
+  /* 背景与表面 */
+  --bg: #fafaf9;            /* 页面底色、对话区 */
+  --surface: #ffffff;       /* 卡片、工具行、输入框、选中的会话项 */
+  --surface-2: #f4f4f2;     /* 侧栏、用户消息、代码块、工具输出 */
+  --surface-3: #ebebe8;     /* hover / 按下 */
+  --line: #e4e4e0;
+  --line-strong: #d4d4cf;   /* 输入框、次要按钮边框 */
+
+  /* 文字 */
+  --fg: #1c1c1a;
+  --fg-2: #57574f;          /* 次要文字、摘要 */
+  --fg-3: #8a8a82;          /* 元信息、时间、占位符 */
+
+  /* 强调色：只用于主按钮、运行中状态、选中态、链接 */
+  --accent: #3d63dd;
+  --accent-fg: #ffffff;
+  --accent-soft: #ebf0fd;
+
+  /* 语义色 */
+  --warn: #b76e00;          /* 待确认 */
+  --warn-soft: #fff4e0;
+  --warn-border: #f2c46d;
+  --danger: #c93c37;
+  --danger-fg: #ffffff;
+  --danger-soft: #fdeceb;
+  --success: #2e8a4e;
+  --success-soft: #e7f5ec;
+
+  /* diff */
+  --diff-add-bg: #e6f4ea;
+  --diff-add-fg: #1f6f3a;
+  --diff-del-bg: #fcebea;
+  --diff-del-fg: #a8322d;
+
+  /* 字体 */
+  --ff-sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Noto Sans CJK SC",
+    "Microsoft YaHei", sans-serif;
+  --ff-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas,
+    "Noto Sans Mono CJK SC", monospace;
+
+  /* 字号 / 行高（只用这几档） */
+  --fs-xs: 12px;   --lh-xs: 16px;   /* 元信息、徽标 */
+  --fs-sm: 13px;   --lh-sm: 20px;   /* 界面文字、工具行、侧栏 */
+  --fs-base: 14px; --lh-base: 22px; /* 按钮、标题栏 */
+  --fs-chat: 15px; --lh-chat: 26px; /* 对话正文 */
+  --fs-md: 16px;   --lh-md: 24px;   /* 手机输入框（防 iOS 缩放）、手机会话标题 */
+  --fs-lg: 18px;   --lh-lg: 26px;   /* 页面标题 */
+  --fs-code: 12.5px; --lh-code: 19px;
+
+  /* 圆角 */
+  --r-sm: 4px;   /* 行内代码、徽标 */
+  --r: 6px;      /* 按钮、工具行、代码块、会话项 */
+  --r-lg: 10px;  /* 消息、卡片、输入框 */
+  --r-xl: 14px;  /* 底部弹层顶部 */
+  --r-full: 999px;
+
+  /* 阴影：只给浮层（抽屉、弹窗、下拉菜单、底部弹层） */
+  --elev-overlay: 0 8px 28px rgb(0 0 0 / 0.12), 0 1px 3px rgb(0 0 0 / 0.08);
+
+  /* 布局尺寸。侧栏、面板宽度可拖动，--*-w 是默认值，实际宽度由前端写到同名变量上 */
+  --sidebar-w: 280px;
+  --sidebar-w-min: 220px;
+  --sidebar-w-max: 420px;
+  --panel-w: 480px;
+  --panel-w-min: 360px;
+  --panel-w-max: 800px;
+  --chat-min: 480px;        /* 对话区最小宽度，侧栏/面板变宽不能挤到它以下 */
+  --chat-max: 760px;
+  --topbar-h: 48px;
+  --topbar-h-mobile: 52px;
+
+  /* 动效 */
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
+  --motion-dur: 150ms;
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #151514;
+  --surface: #1c1c1b;
+  --surface-2: #232321;
+  --surface-3: #2c2c2a;
+  --line: #2f2f2c;
+  --line-strong: #3d3d39;
+  --fg: #ecece8;
+  --fg-2: #b4b4ac;
+  --fg-3: #85857d;
+  --accent: #7b9cff;
+  --accent-fg: #10131c;
+  --accent-soft: #1f2840;
+  --warn: #e8a33d;
+  --warn-soft: #2e2414;
+  --warn-border: #5c4318;
+  --danger: #f07a75;
+  --danger-fg: #1c0f0e;
+  --danger-soft: #3a1e1d;
+  --success: #5cc27f;
+  --success-soft: #17301f;
+  --diff-add-bg: #15301f;
+  --diff-add-fg: #7ad69a;
+  --diff-del-bg: #3a1d1c;
+  --diff-del-fg: #f4908b;
+  --elev-overlay: 0 8px 28px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg: #151514;
+    --surface: #1c1c1b;
+    --surface-2: #232321;
+    --surface-3: #2c2c2a;
+    --line: #2f2f2c;
+    --line-strong: #3d3d39;
+    --fg: #ecece8;
+    --fg-2: #b4b4ac;
+    --fg-3: #85857d;
+    --accent: #7b9cff;
+    --accent-fg: #10131c;
+    --accent-soft: #1f2840;
+    --warn: #e8a33d;
+    --warn-soft: #2e2414;
+    --warn-border: #5c4318;
+    --danger: #f07a75;
+    --danger-fg: #1c0f0e;
+    --danger-soft: #3a1e1d;
+    --success: #5cc27f;
+    --success-soft: #17301f;
+    --diff-add-bg: #15301f;
+    --diff-add-fg: #7ad69a;
+    --diff-del-bg: #3a1d1c;
+    --diff-del-fg: #f4908b;
+    --elev-overlay: 0 8px 28px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
+    color-scheme: dark;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-dur: 0ms; }
+}

@@ -1,0 +1,20 @@
+[Unit]
+Description=claude-web
+After=network.target
+
+[Service]
+Type=simple
+# Use the same user and HOME as the authenticated claude CLI.
+User=root
+WorkingDirectory=/root/dev/claude-web
+Environment=NODE_ENV=production
+Environment=CLAUDE_WEB_CONFIG=/root/dev/claude-web/config.json
+UnsetEnvironment=ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+ExecStart=/usr/bin/node /root/dev/claude-web/dist/server/index.js
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
