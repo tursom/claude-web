@@ -5,7 +5,7 @@ export function registerAuth(app: FastifyInstance, config: Config) {
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('Cache-Control', 'no-store');
-    if (request.headers['remote-email'] !== config.owner) {
+    if (config.authMode !== 'proxy' && (!config.owner || request.headers['remote-email'] !== config.owner)) {
       if (!request.url.startsWith('/api/') && request.headers.upgrade?.toLowerCase() !== 'websocket')
         return reply
           .code(403)

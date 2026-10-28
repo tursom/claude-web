@@ -21,6 +21,18 @@ export function blocksOf(value: Message): Block[] {
   return Array.isArray(content) ? content : [];
 }
 
+/** Skill prompts are context injected by the CLI, not messages authored by the user. */
+export function isSkillInjectionBlock(value: Message, block: Block): boolean {
+  const message = envelope(value);
+  return (
+    roleOf(message) === 'user' &&
+    (message.isSynthetic === true || message.isMeta === true) &&
+    block.type === 'text' &&
+    typeof block.text === 'string' &&
+    /^\s*Base directory for this skill:[^\S\r\n]+\S[^\r\n]*(?:\r?\n|$)/.test(block.text)
+  );
+}
+
 export function textOf(value: unknown): string {
   if (typeof value === 'string') return value;
   if (Array.isArray(value))

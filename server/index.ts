@@ -1,8 +1,9 @@
 import { loadConfig, listenAddress } from './config.js';
 import { buildApp } from './app.js';
 try {
-  const config = await loadConfig();
-  const app = await buildApp(config, { logger: true });
+  const configPath = process.env.CLAUDE_WEB_CONFIG ?? 'config.json';
+  const config = await loadConfig(configPath);
+  const app = await buildApp(config, { logger: true, configPath });
   const close = async () => {
     await app.close();
     process.exitCode = 0;

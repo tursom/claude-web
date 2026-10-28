@@ -1,0 +1,18 @@
+[Unit]
+Description=claude-web (native user service)
+ConditionPathExists=%h/.config/claude-web/config.json
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/claude-web
+# A clean service environment keeps unrelated application credentials and
+# PI WEB daemon settings out of Claude and terminal subprocesses.
+ExecStart=/usr/bin/env -i HOME=%h USER=%u LOGNAME=%u PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 NODE_ENV=production CLAUDE_WEB_CONFIG=%h/.config/claude-web/config.json /usr/bin/node %h/dev/claude-web/dist/server/index.js
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=default.target

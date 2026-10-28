@@ -5,5 +5,10 @@
   "workspaceRoots": ["/root/dev"],
   "claudePath": "/usr/bin/claude",
   "maxLiveSessions": 4,
-  "idleCloseMinutes": 30
+  "idleCloseMinutes": 30,
+  "autoCompactBeforeExpiry": true,
+  "terminal": {
+    "maxTerminals": 8,
+    "maxPerProject": 4
+  }
 }

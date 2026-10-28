@@ -1,5 +1,133 @@
 import { test, expect } from '@playwright/test';
 const id = '11111111-1111-4111-8111-111111111111';
+
+for (const width of [1280, 390, 360]) {
+  for (const theme of ['light', 'dark'] as const) {
+    test(`long command suggestions stay readable at ${width} ${theme}`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width, height: 800 });
+      await page.emulateMedia({ colorScheme: theme });
+      const argumentHint =
+        '[low|medium|high|xhigh|max|ultra] [--fix] [--comment] [<pr#>|<branch>|<path>] [--max-findings <n>|all]';
+      const description =
+        'Review the current diff, or a PR number/branch/path target, for correctness bugs (plus reuse/simplification/efficiency cleanups where the model’s recipe covers them) at the effort level given first, before any target. '.repeat(
+          6,
+        );
+      await page.route('**/api/commands?**', (route) =>
+        route.fulfill({
+          json: [
+            { name: 'code-review', argumentHint, description },
+            { name: 'compact', argumentHint: '[instructions]', description: '压缩当前会话上下文' },
+            {
+              name: `company:${'long-plugin-name-'.repeat(8)}review`,
+              argumentHint: `[${'longargument'.repeat(30)}]`,
+              description: 'Long unbroken description: ' + 'word'.repeat(100),
+            },
+          ],
+        }),
+      );
+      await page.goto(`/s/${id}`);
+      const input = page.getByLabel('输入消息', { exact: true });
+      await input.fill('/co');
+      const menu = page.locator('.cc-completion');
+      const review = page.getByRole('option').filter({ hasText: '/code-review' });
+      await expect(review).toBeVisible();
+      await expect(page.getByRole('option').filter({ hasText: '/compact' })).toBeInViewport();
+      const geometry = await review.evaluate((element) => {
+        const name = element.querySelector('.cc-command-name')!.getBoundingClientRect();
+        const hint = element.querySelector('.cc-menu-hint')!.getBoundingClientRect();
+        const description = element.querySelector('.cc-menu-description')!.getBoundingClientRect();
+        return {
+          nameBottom: name.bottom,
+          hintTop: hint.top,
+          hintBottom: hint.bottom,
+          descriptionTop: description.top,
+          height: element.getBoundingClientRect().height,
+        };
+      });
+      expect(geometry.nameBottom).toBeLessThanOrEqual(geometry.hintTop);
+      expect(geometry.hintBottom).toBeLessThanOrEqual(geometry.descriptionTop);
+      expect(geometry.height).toBeLessThan(150);
+      expect(
+        await menu.evaluate((el) =>
+          [...el.querySelectorAll('.cc-command-option, .cc-completion-list'), el].every(
+            (item) => item.scrollWidth <= item.clientWidth + 1,
+          ),
+        ),
+      ).toBe(true);
+      await expect(review.locator('.cc-menu-description')).toHaveAttribute('title', description);
+      await page.screenshot({ path: testInfo.outputPath(`commands-${width}-${theme}.png`) });
+      await input.press('ArrowDown');
+      await input.press('Tab');
+      await expect(input).toHaveValue('/compact ');
+      await input.fill(`/co${'longquery'.repeat(30)}`);
+      await expect(page.getByText('没有匹配的命令', { exact: true })).toBeVisible();
+      expect(await menu.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await input.fill('@server');
+      await expect(page.getByRole('option').filter({ hasText: 'server/config.ts' })).toBeVisible();
+      await input.press('Tab');
+      await expect(input).toHaveValue('@server/config.ts ');
+    });
+  }
+}
+
+test('Claude slash commands show descriptions and Tab completes without sending', async ({ page }) => {
+  const discovered: string[] = [];
+  await page.route('**/api/commands?**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('discover') === 'true') discovered.push(url.pathname);
+    await route.fulfill({
+      json:
+        url.searchParams.get('discover') === 'true'
+          ? [
+              { name: 'compact', description: '压缩当前会话上下文', argumentHint: '[instructions]' },
+              { name: 'config', description: '查看配置', argumentHint: '' },
+              { name: 'plugin:review', description: '项目审查', argumentHint: '[path]' },
+            ]
+          : [],
+    });
+  });
+  await page.addInitScript(() => {
+    const original = WebSocket.prototype.send;
+    (window as any).__sent = [];
+    WebSocket.prototype.send = function (data) {
+      try {
+        (window as any).__sent.push(JSON.parse(String(data)));
+      } catch {}
+      return original.call(this, data);
+    };
+  });
+  await page.goto(`/s/${id}`);
+  const input = page.getByLabel('输入消息', { exact: true });
+  await input.fill('/co');
+  await expect(page.getByRole('option').filter({ hasText: '/compact' })).toBeVisible();
+  await expect(page.getByText('压缩当前会话上下文', { exact: true })).toBeVisible();
+  await expect(page.getByText('[instructions]', { exact: true })).toBeVisible();
+  await input.press('ArrowDown');
+  await input.press('Tab');
+  await expect(input).toHaveValue('/config ');
+  await expect(input).toBeFocused();
+  expect(await page.evaluate(() => (window as any).__sent.filter((v: any) => v.type === 'send'))).toEqual([]);
+  await input.fill('/comp');
+  await expect(page.getByRole('option')).toHaveCount(1);
+  await input.press('Tab');
+  await expect(input).toHaveValue('/compact ');
+  await input.press('Enter');
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__sent.filter((v: any) => v.type === 'send').length))
+    .toBe(1);
+  await input.fill('/plugin:');
+  await expect(page.getByText('项目审查', { exact: true })).toBeVisible();
+  await input.press('Tab');
+  await expect(input).toHaveValue('/plugin:review ');
+  await input.fill('/zzzz');
+  await expect(page.getByText('没有匹配的命令', { exact: true })).toBeVisible();
+  await input.press('Enter');
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__sent.filter((v: any) => v.type === 'send').length))
+    .toBe(2);
+  expect(discovered.length).toBeGreaterThan(0);
+});
 const sessions = [
   {
     sessionId: id,
@@ -61,6 +189,7 @@ test.beforeEach(async ({ page }, testInfo) => {
     if (!url.pathname.startsWith('/api/')) return route.continue();
     let result: any = {};
     if (url.pathname === '/api/me') result = { email: 'owner@example.com', maxLiveSessions: 4 };
+    if (/^\/api\/sessions\/[^/]+\/usage$/.test(url.pathname)) result = { usage: null, source: 'unavailable' };
     if (url.pathname === '/api/sessions') result = sessions;
     if (url.pathname === '/api/models')
       result = [

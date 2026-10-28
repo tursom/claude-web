@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { Markdown } from './Markdown';
+import { collectCompactions, type Compaction } from './compaction';
+import { CompactionCard } from './CompactionCard';
 import {
   Ban,
   Bot,
@@ -30,6 +32,7 @@ import {
   editsOf,
   envelope,
   imageSource,
+  isSkillInjectionBlock,
   lineCount,
   roleOf,
   textOf,
@@ -61,6 +64,7 @@ type ThinkingItem = { key: string; kind: 'thinking'; text: string; ms?: number }
 type Item =
   | TextItem
   | ThinkingItem
+  | { key: string; kind: 'compaction'; value: Compaction }
   | { key: string; kind: 'user'; blocks: Block[]; images: string[]; queued: boolean }
   | { key: string; kind: 'tool'; tool: Tool }
   | { key: string; kind: 'result'; message: Message };
@@ -70,6 +74,7 @@ interface Transcript {
 }
 
 function transcript(messages: Message[]): Transcript {
+  const compactions = collectCompactions(messages);
   const groups = new Map<string, Item[]>();
   const tools = new Map<string, Tool>();
   const results: { block: Block; data: Block }[] = [];
@@ -78,6 +83,9 @@ function transcript(messages: Message[]): Transcript {
     const parent = message.parent_tool_use_id ?? '';
     const items = groups.get(parent) ?? [];
     groups.set(parent, items);
+    const compaction = compactions.items.get(index);
+    if (compaction) items.push({ key: compaction.key, kind: 'compaction', value: compaction });
+    if (compactions.hidden.has(index)) return;
     const key = String(message.uuid ?? message.id ?? `message-${index}`);
     const role = roleOf(message);
     const blocks = blocksOf(message);
@@ -113,7 +121,10 @@ function transcript(messages: Message[]): Transcript {
       for (const block of blocks)
         if (block.type === 'tool_result')
           results.push({ block, data: message.tool_use_result ?? message.toolUseResult ?? {} });
-      const visible = blocks.filter((block) => block.type === 'text' || block.type === 'image');
+      const visible = blocks.filter(
+        (block) =>
+          (block.type === 'text' || block.type === 'image') && !isSkillInjectionBlock(message, block),
+      );
       const images = Array.isArray(message.imageIds)
         ? message.imageIds.map((id: string) => `/api/uploads/${encodeURIComponent(id)}`)
         : [];
@@ -136,42 +147,6 @@ function transcript(messages: Message[]): Transcript {
     }
   }
   return { groups, tools };
-}
-
-function Markdown({ text }: { text: string }) {
-  return (
-    <div className="cc-prose">
-      <ReactMarkdown
-        components={{
-          pre({ children }) {
-            return <>{children}</>;
-          },
-          code({ className, children, node, ...props }) {
-            const code = String(children);
-            const language = /language-(\S+)/.exec(className ?? '')?.[1];
-            const block =
-              !!language || code.endsWith('\n') || node?.position?.start.line !== node?.position?.end.line;
-            return block ? (
-              <Code code={code.replace(/\n$/, '')} language={language} />
-            ) : (
-              <code className={className} {...props}>
-                {children}
-              </code>
-            );
-          },
-          a({ children, ...props }) {
-            return (
-              <a {...props} target="_blank" rel="noreferrer">
-                {children}
-              </a>
-            );
-          },
-        }}
-      >
-        {text}
-      </ReactMarkdown>
-    </div>
-  );
 }
 
 function Thinking({ item }: { item: ThinkingItem }) {
@@ -254,6 +229,7 @@ function toolSummary(tool: Tool, cwd?: string): string {
   if (tool.name === 'WebFetch') return String(input.url ?? '').replace(/^https?:\/\//, '');
   if (tool.name === 'WebSearch') return String(input.query ?? '');
   if (tool.name === 'Agent' || tool.name === 'Task') return String(input.description ?? '');
+  if (tool.name === 'Skill') return [input.skill, input.args].filter(Boolean).join(' ');
   if (tool.name === 'AskUserQuestion') return String(input.questions?.[0]?.question ?? '');
   return JSON.stringify(input);
 }
@@ -493,8 +469,11 @@ function ItemList({
             </div>
           );
         }
-        if (item.kind === 'text') return <Markdown key={item.key} text={item.text} />;
+        if (item.kind === 'text')
+          return <Markdown key={item.key} text={item.text} cwd={props.cwd} onOpenFile={props.onOpenFile} />;
         if (item.kind === 'thinking') return <Thinking key={item.key} item={item} />;
+        if (item.kind === 'compaction')
+          return <CompactionCard key={item.key} value={item.value} status={props.status} />;
         if (item.kind === 'result') return <Result key={item.key} message={item.message} />;
         const images = [
           ...item.images,
@@ -592,7 +571,11 @@ export function Messages({
     !pending.length &&
     !afterUser.some(
       (item) =>
-        item.kind === 'text' || item.kind === 'thinking' || item.kind === 'tool' || item.kind === 'result',
+        item.kind === 'text' ||
+        item.kind === 'thinking' ||
+        item.kind === 'tool' ||
+        item.kind === 'result' ||
+        item.kind === 'compaction',
     );
   return (
     <div className={`cc-messages-shell${externalScroll ? ' cc-external-scroll' : ''}`}>
@@ -611,7 +594,7 @@ export function Messages({
             onOpenFile={onOpenFile}
             cwd={cwd}
           />
-          {delta && <Markdown text={delta} />}
+          {delta && <Markdown text={delta} cwd={cwd} onOpenFile={onOpenFile} />}
           {thinking && (
             <div className="cc-awaiting">
               <LoaderCircle size={16} strokeWidth={1.75} className="cc-spin" />

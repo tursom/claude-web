@@ -1,0 +1,81 @@
+.cc-compaction {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 12px 14px;
+  background: var(--surface);
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
+}
+.cc-compaction-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cc-compaction-head strong {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.cc-compaction-head > span {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+}
+.cc-compaction-running .cc-compaction-head {
+  color: var(--accent);
+}
+.cc-compaction-success .cc-compaction-head > svg {
+  color: var(--success);
+}
+.cc-compaction-warning,
+.cc-compaction-incomplete {
+  border-color: var(--warn-border);
+}
+.cc-compaction-warning .cc-compaction-head,
+.cc-compaction-incomplete .cc-compaction-head {
+  color: var(--warn);
+}
+.cc-compaction-failed .cc-compaction-head {
+  color: var(--danger);
+}
+.cc-compaction-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 6px;
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.cc-compaction-error {
+  margin: 8px 0 0;
+  color: var(--warn);
+}
+.cc-compaction-details {
+  margin-top: 8px;
+}
+.cc-compaction-details summary {
+  cursor: pointer;
+  width: fit-content;
+  color: var(--fg-2);
+  font-size: var(--fs-xs);
+}
+.cc-compaction-details summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.cc-compaction-details pre {
+  margin: 8px 0 0;
+  padding: 10px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: var(--r);
+  background: var(--bg);
+  color: var(--fg-2);
+  font: var(--fs-xs)/var(--lh-sm) var(--ff-mono);
+}

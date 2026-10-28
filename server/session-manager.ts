@@ -6,6 +6,9 @@ import type { UploadStore } from './uploads.js';
 import { Runtime, type Listener } from './runtime.js';
 import { agentSdk, closedMeta, SessionError } from './sdk.js';
 import type { UsageManager } from './usage.js';
+import { CommandCatalog } from './command-catalog.js';
+import { readSavedSessionUsage } from './saved-session-usage.js';
+import { sessionUsageFromMessages, type SessionUsageResponse } from '../shared/session-usage.js';
 
 export class SessionManager {
   private readonly runtimes = new Map<string, Runtime>();
@@ -19,12 +22,14 @@ export class SessionManager {
   private closing = false;
   private closeTask?: Promise<void>;
   private usage?: UsageManager;
+  private readonly catalog: CommandCatalog;
 
   constructor(
     private readonly config: Config,
     private readonly paths: Paths,
     private readonly uploads: UploadStore,
   ) {
+    this.catalog = new CommandCatalog(config);
     this.timer = setInterval(() => {
       void this.reapIdle().catch(() => {});
     }, 30_000);
@@ -201,6 +206,21 @@ export class SessionManager {
     return { messages: all.slice(offset, offset + limit), total: all.length };
   }
 
+  async readSessionUsage(id: string): Promise<SessionUsageResponse> {
+    // Validate both identity and workspace before reading either live or saved counters.
+    const session = await this.info(id);
+    const runtime = this.get(id);
+    if (runtime) {
+      // get_usage also fetches account limits, even with skipBehaviors. Session
+      // counters must use existing events/disk only, not that control endpoint.
+      const usage = sessionUsageFromMessages(runtime.messages(), id);
+      if (usage) return { usage, source: 'result' };
+    }
+    const saved = await readSavedSessionUsage(id, session.cwd);
+    const usage = saved && sessionUsageFromMessages([{ type: 'result', ...saved }], id);
+    return { usage, source: usage ? 'saved' : 'unavailable' };
+  }
+
   async send(
     id: string,
     text: string,
@@ -266,7 +286,7 @@ export class SessionManager {
         this.broadcast(id, {
           type: 'meta',
           sessionId: id,
-          meta: { ...closedMeta(history, session.lastModified), ...preferences },
+          meta: { ...closedMeta(history), ...preferences },
         });
       }
     });
@@ -298,7 +318,7 @@ export class SessionManager {
           history: history.slice(-200),
           events: [],
           pending: [],
-          meta: { ...closedMeta(history, session.lastModified), ...this.preferences.get(id) },
+          meta: { ...closedMeta(history), ...this.preferences.get(id) },
           total: history.length,
         });
       }
@@ -325,8 +345,15 @@ export class SessionManager {
     return [...this.modelCache];
   }
 
-  async commands(cwd: string): Promise<Command[]> {
-    return [...(this.commandCache.get(await this.paths.cwd(cwd)) ?? [])];
+  async commands(cwd: string, discover = false): Promise<Command[]> {
+    const checked = await this.paths.cwd(cwd);
+    const cached = this.commandCache.get(checked);
+    if (cached) return [...cached];
+    if (!discover) return [];
+    const commands = await this.catalog.read(checked);
+    // A runtime may have published a newer catalog while discovery was pending.
+    if (!this.commandCache.has(checked)) this.commandCache.set(checked, commands);
+    return [...this.commandCache.get(checked)!];
   }
 
   async reapIdle(now = Date.now()): Promise<void> {
@@ -335,10 +362,13 @@ export class SessionManager {
       [...this.runtimes].map(([id]) =>
         this.locked(id, async () => {
           const runtime = this.get(id);
+          const limited = this.usage?.isLimited(now) ?? false;
+          if (runtime && !limited && (await runtime.compactBeforeExpiry(now))) return;
           if (
             runtime?.status === 'idle' &&
             !runtime.subscribers &&
-            now - runtime.idleSince >= this.config.idleCloseMinutes * 60_000
+            now - runtime.idleSince >= this.config.idleCloseMinutes * 60_000 &&
+            (limited || !runtime.hasPendingCacheCompaction(now))
           ) {
             await runtime.close();
           }
@@ -352,6 +382,7 @@ export class SessionManager {
       this.closing = true;
       clearInterval(this.timer);
       this.closeTask = (async () => {
+        await this.catalog.close();
         // Close Queries first, so a startup/control request cannot hold shutdown.
         await Promise.allSettled([...this.runtimes.values()].map((runtime) => runtime.close()));
         await Promise.allSettled([...this.locks.values()]);

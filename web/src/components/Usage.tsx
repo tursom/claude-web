@@ -3,6 +3,11 @@ import * as Popover from '@radix-ui/react-popover';
 import * as Dialog from '@radix-ui/react-dialog';
 import { ChevronRight, Gauge, LoaderCircle, RefreshCw, TriangleAlert, X } from 'lucide-react';
 import { emptyUsage, type ExtraUsage, type RateLimitRow, type Usage } from '../../../shared/protocol';
+import {
+  formatSessionCost,
+  type SessionUsageResponse,
+  type SessionUsageSummary,
+} from '../store/session-usage';
 import './usage.css';
 
 const MINUTE = 60_000;
@@ -123,6 +128,14 @@ interface UsageContextValue {
   refreshing: boolean;
   onRefresh: () => void;
   now: number;
+  session?: {
+    name: string;
+    usage: SessionUsageSummary | null;
+    source?: SessionUsageResponse['source'];
+    refreshing?: boolean;
+    error?: boolean;
+    onRefresh?: () => void;
+  };
 }
 const UsageContext = createContext<UsageContextValue>({
   usage: emptyUsage(),
@@ -136,9 +149,10 @@ export interface UsageProviderProps {
   refreshing: boolean;
   onRefresh: () => void;
   children: ReactNode;
+  session?: UsageContextValue['session'];
 }
 
-export function UsageProvider({ usage, refreshing, onRefresh, children }: UsageProviderProps) {
+export function UsageProvider({ usage, refreshing, onRefresh, children, session }: UsageProviderProps) {
   const [now, setNow] = useState(Date.now);
   const previous = useRef<Usage>(emptyUsage());
   const displayUsage =
@@ -167,7 +181,7 @@ export function UsageProvider({ usage, refreshing, onRefresh, children }: UsageP
   }, [resetsAt, now]);
   return (
     <UsageContext.Provider
-      value={{ usage: displayUsage, refreshing, onRefresh, now: Math.max(now, Date.now()) }}
+      value={{ usage: displayUsage, refreshing, onRefresh, now: Math.max(now, Date.now()), session }}
     >
       {children}
     </UsageContext.Provider>
@@ -204,7 +218,105 @@ function UsageMeter({ percent, label }: { percent: number; label: string }) {
   );
 }
 
+function SessionUsageDetails() {
+  const { session } = useContext(UsageContext);
+  if (!session) return null;
+  const data = session.usage;
+  const count = (value: number | null) => (value === null ? '—' : value.toLocaleString('en-US'));
+  return (
+    <section className="cu-session" aria-label="当前会话用量">
+      <div className="cu-session-heading">
+        <h3 className="cu-group">当前会话</h3>
+        {session.onRefresh && (
+          <button
+            type="button"
+            className="cu-icon-button"
+            aria-label="刷新会话用量"
+            title="刷新会话用量"
+            onClick={session.onRefresh}
+            disabled={session.refreshing}
+          >
+            <RefreshCw size={16} className={session.refreshing ? 'cu-spin' : undefined} />
+          </button>
+        )}
+      </div>
+      <div className="cu-session-name" title={session.name}>
+        {session.name}
+      </div>
+      {data ? (
+        <>
+          <dl className="cu-session-totals">
+            <div>
+              <dt>费用估算（USD）</dt>
+              <dd className="cu-session-cost">{formatSessionCost(data.costUsd)}</dd>
+            </div>
+            <div>
+              <dt>输入 tokens</dt>
+              <dd>{count(data.input)}</dd>
+            </div>
+            <div>
+              <dt>输出 tokens</dt>
+              <dd>{count(data.output)}</dd>
+            </div>
+            <div>
+              <dt>缓存读取 tokens</dt>
+              <dd>{count(data.cacheRead)}</dd>
+            </div>
+            <div>
+              <dt>缓存写入 tokens</dt>
+              <dd>{count(data.cacheWrite)}</dd>
+            </div>
+          </dl>
+          {data.models.length > 0 && (
+            <details className="cu-session-models">
+              <summary>按模型查看</summary>
+              {data.models.map((model) => (
+                <div className="cu-session-model" key={model.name}>
+                  <span>{model.name}</span>
+                  <strong>{model.costUsd === null ? '—' : formatSessionCost(model.costUsd)}</strong>
+                  <small>
+                    输入 {count(model.input)} · 输出 {count(model.output)}
+                    <br />
+                    缓存读取 {count(model.cacheRead)} · 缓存写入 {count(model.cacheWrite)}
+                  </small>
+                </div>
+              ))}
+            </details>
+          )}
+          <p className="cu-session-note">
+            {session.source === 'saved' ? '上次保存的会话累计统计。' : '截至最近完成回合的会话累计统计。'}
+            进行中的回合完成后更新。 费用为估算，不是实际账单。
+          </p>
+        </>
+      ) : (
+        <p className="cu-session-note">
+          {session.refreshing
+            ? '正在读取当前会话用量…'
+            : session.error
+              ? '会话用量读取失败，请刷新重试。'
+              : '未找到已保存的会话用量统计。'}
+        </p>
+      )}
+      {data && session.error && (
+        <p className="cu-session-note" role="status">
+          会话用量更新失败，保留上次统计。
+        </p>
+      )}
+      <div className="cu-separator" />
+    </section>
+  );
+}
+
 function UsageDetails() {
+  return (
+    <>
+      <SessionUsageDetails />
+      <AccountUsageDetails />
+    </>
+  );
+}
+
+function AccountUsageDetails() {
   const { usage, refreshing, onRefresh, now } = useContext(UsageContext);
   if (usage.error === 'unavailable') return <p className="cu-message">{unavailableText}</p>;
   const extra = usage.extraUsage && formatExtraUsage(usage.extraUsage);
@@ -289,13 +401,15 @@ function UsageDetails() {
 }
 
 export function UsageIndicator({ location }: { location: 'sidebar' | 'toolbar' }) {
-  const { usage, refreshing, onRefresh, now } = useContext(UsageContext);
+  const { usage, refreshing, onRefresh, now, session } = useContext(UsageContext);
   const mobile = useMobileUsage();
   const [open, setOpen] = useState(false);
   const row = activeUsageRow(usage.limits);
   const limited = isUsageLimited(usage.limited, now);
   const severity = limited ? 'critical' : usageSeverity(row?.severity ?? 'normal');
-  const visible = location === 'sidebar' || limited || severity === 'warning' || severity === 'critical';
+  const visible =
+    location === 'sidebar' || !!session || limited || severity === 'warning' || severity === 'critical';
+  const showSession = location === 'toolbar' && !!session && !limited && severity === 'normal';
   const percent = limited ? 100 : (row?.percent ?? 0);
   const recovery = formatUsageRecovery(usage.limited?.resetsAt, now);
   const unavailable = usage.error === 'unavailable';
@@ -304,9 +418,11 @@ export function UsageIndicator({ location }: { location: 'sidebar' | 'toolbar' }
   const reset = row && formatUsageReset(row.resets_at, now);
   const title =
     location === 'toolbar'
-      ? limited
-        ? (formatUsageNotice(usage.limited, now) ?? '额度已用完。')
-        : `${row ? usageRowName(row) : '额度'}额度已用 ${percent}%${reset ? `，${reset}` : ''}。`
+      ? showSession
+        ? '会话用量与账号额度'
+        : limited
+          ? (formatUsageNotice(usage.limited, now) ?? '额度已用完。')
+          : `${row ? usageRowName(row) : '额度'}额度已用 ${percent}%${reset ? `，${reset}` : ''}。`
       : '账号额度';
   const changeOpen = (value: boolean) => {
     setOpen(value);
@@ -324,8 +440,18 @@ export function UsageIndicator({ location }: { location: 'sidebar' | 'toolbar' }
         <>
           <Gauge size={16} strokeWidth={1.75} />
           <span>
-            <span className="cu-toolbar-label">额度 </span>
-            {percent}%
+            {showSession ? (
+              session?.usage ? (
+                formatSessionCost(session.usage.costUsd)
+              ) : (
+                '用量'
+              )
+            ) : (
+              <>
+                <span className="cu-toolbar-label">额度 </span>
+                {percent}%
+              </>
+            )}
           </span>
         </>
       ) : (
@@ -375,7 +501,7 @@ export function UsageIndicator({ location }: { location: 'sidebar' | 'toolbar' }
           <Dialog.Content className="cu-sheet" aria-describedby={undefined}>
             <div className="cu-handle" aria-hidden="true" />
             <header className="cu-sheet-head">
-              <Dialog.Title>账号额度</Dialog.Title>
+              <Dialog.Title>{session ? '会话用量与账号额度' : '账号额度'}</Dialog.Title>
               <Dialog.Close asChild>
                 <button type="button" className="cu-icon-button" aria-label="关闭">
                   <X size={20} strokeWidth={1.75} />

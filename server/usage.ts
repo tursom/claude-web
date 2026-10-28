@@ -11,6 +11,8 @@ export interface UsageFrame {
 }
 type Listener = (frame: UsageFrame) => void;
 type Reason = 'manual' | 'result' | 'rate_limit';
+const MIN_INTERVAL = 60_000;
+const MAX_BACKOFF = 15 * 60_000;
 
 /** Account-wide cache. Connections and Runtime events drive refreshes; no polling. */
 export class UsageManager {
@@ -19,11 +21,18 @@ export class UsageManager {
   private inflight?: Promise<void>;
   private cancelProbe?: () => void;
   private lastAttempt: number | null = null;
+  private failures = 0;
+  private retryAt = 0;
   private rateLimitStatus?: SDKRateLimitInfo['status'];
   private resetTimer?: ReturnType<typeof setTimeout>;
   private closed = false;
 
   constructor(private readonly config: Config) {}
+
+  isLimited(now = Date.now()): boolean {
+    const limited = this.usage.limited;
+    return limited !== null && (limited.resetsAt === undefined || limited.resetsAt > now);
+  }
 
   connect(listener: Listener): () => void {
     if (this.closed) return () => {};
@@ -40,8 +49,6 @@ export class UsageManager {
   refresh(reason: Reason = 'manual'): Promise<void> {
     if (this.closed || !this.listeners.size) return Promise.resolve();
     if (this.inflight) return this.inflight;
-    if (reason === 'manual' && this.lastAttempt !== null && Date.now() - this.lastAttempt < 10_000)
-      return Promise.resolve();
     if (reason === 'result' && !this.stale(2 * 60_000)) return Promise.resolve();
     return this.startRefresh();
   }
@@ -104,7 +111,11 @@ export class UsageManager {
   private startRefresh(): Promise<void> {
     if (this.closed || !this.listeners.size) return Promise.resolve();
     if (this.inflight) return this.inflight;
-    this.lastAttempt = Date.now();
+    const now = Date.now();
+    // All entry points, including reconnects and rate-limit changes, share this gate.
+    if (now < this.retryAt || (this.lastAttempt !== null && now - this.lastAttempt < MIN_INTERVAL))
+      return Promise.resolve();
+    this.lastAttempt = now;
     // Install inflight before notifying listeners (which may request a refresh).
     const task = Promise.resolve()
       .then(() => this.probe())
@@ -180,17 +191,32 @@ export class UsageManager {
           ...(account.email ? { email: account.email } : {}),
           ...(account.subscriptionType ? { subscriptionType: account.subscriptionType } : {}),
         },
-        limits: report?.rate_limits?.limits ?? null,
+        limits: report?.rate_limits?.limits,
         extraUsage: report?.rate_limits?.extra_usage ?? null,
-        fetchedAt: Date.now(),
-        error: report?.rate_limits ? null : ('unavailable' as const),
       };
     };
     try {
       const update = await Promise.race([read(), stopped]);
-      if (!this.closed) this.usage = { ...this.usage, ...update };
+      if (!this.closed) {
+        if (Array.isArray(update.limits)) {
+          this.failures = 0;
+          this.retryAt = 0;
+          this.usage = {
+            ...this.usage,
+            ...update,
+            limits: update.limits,
+            fetchedAt: Date.now(),
+            error: null,
+          };
+        } else {
+          // Null rows can mean a failed/429 fetch inside the CLI. They must not
+          // erase a good snapshot or advance its freshness timestamp.
+          this.usage = { ...this.usage, account: update.account };
+          this.failed(this.usage.fetchedAt === null ? 'unavailable' : 'failed');
+        }
+      }
     } catch {
-      if (!this.closed) this.usage = { ...this.usage, error: 'failed' };
+      if (!this.closed) this.failed('failed');
     } finally {
       clearTimeout(timeout);
       input.close();
@@ -202,6 +228,12 @@ export class UsageManager {
       controller.abort();
       this.cancelProbe = undefined;
     }
+  }
+
+  private failed(error: 'failed' | 'unavailable'): void {
+    this.failures = Math.min(this.failures + 1, 5);
+    this.retryAt = Date.now() + Math.min(MIN_INTERVAL * 2 ** (this.failures - 1), MAX_BACKOFF);
+    this.usage = { ...this.usage, error };
   }
 
   private scheduleReset(): void {

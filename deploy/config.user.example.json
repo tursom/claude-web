@@ -1,0 +1,14 @@
+{
+  "listen": "0.0.0.0:8505",
+  "authMode": "proxy",
+  "allowedOrigins": ["http://replace-with-your-intranet-host:8505"],
+  "workspaceRoots": ["/root/dev"],
+  "claudePath": "/usr/bin/claude",
+  "maxLiveSessions": 4,
+  "idleCloseMinutes": 30,
+  "autoCompactBeforeExpiry": true,
+  "terminal": {
+    "maxTerminals": 8,
+    "maxPerProject": 4
+  }
+}

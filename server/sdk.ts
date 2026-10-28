@@ -62,21 +62,79 @@ export function assertSubscriptionAuth(source: string | undefined, provider?: st
 
 /** Cache reads refresh an already known TTL; subagent caches are independent. */
 export function cacheMeta(message: Message, previous?: Meta['cache'], now = Date.now()): Meta['cache'] {
-  if (message.type !== 'assistant' || message.parent_tool_use_id) return previous;
+  if (
+    message.type !== 'assistant' ||
+    message.parent_tool_use_id ||
+    message.parent_agent_id ||
+    message.isReplay ||
+    message.is_replay ||
+    message.message?.model === '<synthetic>'
+  )
+    return previous;
   const creation = message.message?.usage?.cache_creation;
+  const usage = message.message?.usage;
+  if (!(
+    usage?.cache_read_input_tokens > 0 ||
+    usage?.cache_creation_input_tokens > 0 ||
+    creation?.ephemeral_1h_input_tokens > 0 ||
+    creation?.ephemeral_5m_input_tokens > 0
+  ))
+    return previous;
   const ttlSec =
     creation?.ephemeral_1h_input_tokens > 0
       ? 3600
       : creation?.ephemeral_5m_input_tokens > 0
         ? 300
         : previous?.ttlSec;
-  return ttlSec ? { refreshedAt: now, ttlSec } : undefined;
+  const refreshedAt = message.timestamp === undefined ? now : recordedAt(message, now);
+  if (refreshedAt === undefined || (previous && refreshedAt < previous.refreshedAt)) return previous;
+  return ttlSec ? { refreshedAt, ttlSec } : undefined;
 }
 
-export function closedMeta(history: Message[], lastModified: number): Meta {
-  const last = history.findLast((message) => message.type === 'assistant' && !message.parent_tool_use_id);
-  const cache = last && cacheMeta(last, undefined, lastModified);
-  return { ...(last?.message?.model ? { model: last.message.model } : {}), ...(cache ? { cache } : {}) };
+function recordedAt(message: Message, now: number): number | undefined {
+  if (typeof message.timestamp !== 'string') return undefined;
+  const timestamp = Date.parse(message.timestamp);
+  return Number.isFinite(timestamp) && timestamp >= 0 && timestamp <= now ? timestamp : undefined;
+}
+
+/** File mtime is not cache activity: shutdown/cost saves can update it hours later. */
+export function closedMeta(history: Message[]): Meta {
+  const now = Date.now();
+  let compactedAt = -Infinity;
+  let unknownBoundary = false;
+  for (const message of history) {
+    if (message.parent_tool_use_id || message.parent_agent_id) continue;
+    if (
+      (message.type === 'system' && message.subtype === 'compact_boundary') ||
+      (message.type === 'user' && (message.isCompactSummary || message.is_compact_summary))
+    ) {
+      const at = recordedAt(message, now);
+      if (at === undefined) unknownBoundary = true;
+      else compactedAt = Math.max(compactedAt, at);
+    }
+  }
+  let cache: Meta['cache'];
+  let model: string | undefined;
+  for (const message of history) {
+    if (
+      message.type !== 'assistant' ||
+      message.parent_tool_use_id ||
+      message.parent_agent_id ||
+      message.message?.model === '<synthetic>'
+    )
+      continue;
+    const nextModel = message.message?.model;
+    if (typeof nextModel === 'string') {
+      if (nextModel !== model) cache = undefined;
+      model = nextModel;
+    }
+    const at = recordedAt(message, now);
+    // Compaction may preserve older assistant blocks AFTER the summary in the
+    // returned history. Their cache belongs to the previous conversation prefix.
+    if (unknownBoundary || at === undefined) cache = undefined;
+    else if (at > compactedAt) cache = cacheMeta(message, cache, now);
+  }
+  return { ...(model ? { model } : {}), ...(cache ? { cache } : {}) };
 }
 
 /** An AsyncIterable whose pending next() is settled on close as well as push. */

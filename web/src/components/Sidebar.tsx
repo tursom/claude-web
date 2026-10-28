@@ -15,6 +15,7 @@ import {
 import type { Session, Status } from '../../../shared/protocol';
 import './layout.css';
 import { UsageIndicator } from './Usage';
+import { InstallApp } from './InstallApp';
 
 export interface SidebarProps {
   sessions: Session[];
@@ -84,6 +85,7 @@ export function Sidebar({
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     const focusSearch = (event: KeyboardEvent) => {
+      if ((event.target as HTMLElement)?.closest('[data-terminal-focus]')) return;
       if (
         (event.ctrlKey || event.metaKey) &&
         event.key.toLowerCase() === 'k' &&
@@ -298,6 +300,7 @@ export function Sidebar({
         })}
       </div>
       <UsageIndicator location="sidebar" />
+      <InstallApp />
       <footer className="cw-sidebar-footer cw-desktop-only">
         {liveCount > 0 ? (
           <>

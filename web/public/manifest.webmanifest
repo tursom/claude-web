@@ -1,6 +1,8 @@
 {
+  "id": "/",
   "name": "claude-web",
   "short_name": "claude-web",
+  "description": "随时访问本机 Claude Code 会话、项目文件与终端",
   "lang": "zh-CN",
   "start_url": "/",
   "scope": "/",

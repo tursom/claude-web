@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -36,6 +36,16 @@ describe('configuration and workspace boundary', () => {
     expect(listenAddress('[::1]:8504')).toEqual({ host: '::1', port: 8504 });
     expect(() => listenAddress('localhost:99999')).toThrow();
   });
+  it('accepts optional terminal limits and absolute shell configuration', () => {
+    expect(config().terminal).toBeUndefined();
+    expect(parseConfig({ ...config(), terminal: { shell: '/bin/bash' } }).terminal).toEqual({
+      shell: '/bin/bash',
+      maxTerminals: 8,
+      maxPerProject: 4,
+    });
+    expect(() => parseConfig({ ...config(), terminal: { shell: 'bash' } })).toThrow();
+    expect(() => parseConfig({ ...config(), terminal: { maxTerminals: 0 } })).toThrow();
+  });
   it('resolves paths and rejects traversal, prefix collisions and symlinks', async () => {
     const p = new Paths(config().workspaceRoots);
     await p.init();
@@ -47,6 +57,63 @@ describe('configuration and workspace boundary', () => {
   });
 });
 describe('HTTP security and workspace routes', () => {
+  it('exposes read-only session usage with normal authentication and UUID validation', async () => {
+    const readSessionUsage = vi.fn(async () => ({
+      usage: { costUsd: 9.25, input: 1, output: 2, cacheRead: 3, cacheWrite: 4, models: [] },
+      source: 'saved',
+    }));
+    const app = await buildApp(config(), {
+      manager: { ...fakeManager, readSessionUsage } as unknown as SessionManager,
+    });
+    try {
+      const url = '/api/sessions/11111111-1111-4111-8111-111111111111/usage';
+      expect((await app.inject(url)).statusCode).toBe(403);
+      expect((await app.inject({ url: '/api/sessions/not-an-id/usage', headers })).statusCode).toBe(400);
+      expect(readSessionUsage).not.toHaveBeenCalled();
+      const response = await app.inject({ url, headers });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ source: 'saved', usage: { costUsd: 9.25 } });
+    } finally {
+      await app.close();
+    }
+  });
+  it('delegates identity entirely to the proxy without requiring account headers', async () => {
+    const proxyConfig = parseConfig({ ...config(), authMode: 'proxy', owner: undefined });
+    expect(() => parseConfig({ ...config(), owner: undefined })).toThrow();
+    const app = await buildApp(proxyConfig, {
+      manager: fakeManager,
+      usage: {
+        connect: () => () => {},
+        close: async () => {},
+      } as unknown as import('../server/usage.js').UsageManager,
+    });
+    try {
+      expect((await app.inject('/api/me')).statusCode).toBe(200);
+      expect(
+        (await app.inject({ url: '/api/me', headers: { 'remote-email': 'any@example.com' } })).statusCode,
+      ).toBe(200);
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/api/uploads',
+            headers: { origin: 'https://wrong.example' },
+          })
+        ).statusCode,
+      ).toBe(403);
+      const allowed = await app.inject({
+        method: 'POST',
+        url: '/api/sessions',
+        headers: { origin: 'https://cc.example.com' },
+        payload: {},
+      });
+      expect(allowed.statusCode).toBe(400);
+      const socket = await app.injectWS('/ws', { headers: { origin: 'https://cc.example.com' } });
+      socket.terminate();
+    } finally {
+      await app.close();
+    }
+  });
   it('serves authenticated SPA routes and assets while retaining API 404 and page-level 403', async () => {
     const staticRoot = path.join(root, 'static');
     await mkdir(staticRoot);
@@ -54,6 +121,9 @@ describe('HTTP security and workspace routes', () => {
     await writeFile(path.join(staticRoot, 'asset.js'), 'console.log("ok")');
     const app = await buildApp(config(), { manager: fakeManager, staticRoot });
     try {
+      const home = await app.inject({ url: '/', headers });
+      expect(home.statusCode).toBe(200);
+      expect(home.body).toContain('<title>claude-web</title>');
       const page = await app.inject({ url: '/s/test', headers });
       expect(page.statusCode).toBe(200);
       expect(page.body).toContain('<title>claude-web</title>');

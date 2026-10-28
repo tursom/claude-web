@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ChevronDown,
@@ -7,23 +7,34 @@ import {
   File,
   Folder,
   LoaderCircle,
-  PanelRightClose,
   RefreshCw,
 } from 'lucide-react';
 import type { TreeEntry } from '../../../shared/protocol';
 import { api } from '../api/client';
 import { Code } from './Code';
 import { DiffView } from './DiffView';
+import { HtmlViewer, isHtmlFile } from './HtmlViewer';
+import { MarkdownFile, isMarkdownFile } from './Markdown';
+import { PanelHeader } from './PanelHeader';
 import './layout.css';
+
+const TerminalPanel = lazy(() =>
+  import('./TerminalPanel').then((module) => ({ default: module.TerminalPanel })),
+);
+const panelTabs = ['files', 'diff', 'terminal'] as const;
+const panelLabels = { files: '文件', diff: 'Diff', terminal: '终端' };
 
 export interface SidePanelProps {
   cwd: string;
-  tab: 'files' | 'diff';
+  tab: 'files' | 'diff' | 'terminal';
   path?: string;
-  onTab: (tab: 'files' | 'diff') => void;
+  onTab: (tab: 'files' | 'diff' | 'terminal') => void;
   onClose: () => void;
   onPath: (path?: string) => void;
   refreshKey?: number;
+  expanded?: boolean;
+  onExpanded?: (expanded: boolean) => void;
+  onError?: (message: string) => void;
 }
 interface FileContent {
   path: string;
@@ -265,7 +276,10 @@ function FilesPanel({
   onPath,
   refreshKey,
 }: Pick<SidePanelProps, 'cwd' | 'path' | 'onPath'> & { refreshKey: number }) {
-  const [file, setFile] = useState<FileContent>();
+  const [loaded, setLoaded] = useState<{ path: string; file: FileContent; revision: number }>();
+  const file = loaded?.path === path ? loaded?.file : undefined;
+  const [reload, setReload] = useState(0);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -276,19 +290,29 @@ function FilesPanel({
     [],
   );
   useEffect(() => {
-    setFile(undefined);
     setError('');
-    if (!path) return;
+    setLoading(Boolean(path));
+    if (!path) {
+      setLoaded(undefined);
+      return;
+    }
     const controller = new AbortController();
-    api<FileContent>(`/api/fs/file?${new URLSearchParams({ cwd, path })}`, { signal: controller.signal })
+    api<FileContent>(`/api/fs/file?${new URLSearchParams({ cwd, path })}`, {
+      signal: controller.signal,
+      cache: 'no-store',
+    })
       .then((result) => {
-        if (!controller.signal.aborted) setFile(result);
+        if (!controller.signal.aborted)
+          setLoaded((previous) => ({ path, file: result, revision: (previous?.revision ?? 0) + 1 }));
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) setError(`操作失败：${errorMessage(error)}`);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [cwd, path, refreshKey]);
+  }, [cwd, path, refreshKey, reload]);
 
   async function copyPath() {
     if (!path) return;
@@ -304,8 +328,22 @@ function FilesPanel({
 
   return (
     <div className="cw-files-panel">
+      {!path && (
+        <div className="cw-file-list-head">
+          <span>项目文件</span>
+          <button
+            type="button"
+            className="cw-file-refresh"
+            aria-label="刷新文件列表"
+            onClick={() => setReload((value) => value + 1)}
+          >
+            <RefreshCw size={16} />
+            刷新
+          </button>
+        </div>
+      )}
       <div className="cw-panel-scroll" hidden={Boolean(path)}>
-        <TreeBranch cwd={cwd} refreshKey={refreshKey} onPath={onPath} />
+        <TreeBranch cwd={cwd} refreshKey={refreshKey + reload} onPath={onPath} />
       </div>
       {path && (
         <>
@@ -322,6 +360,17 @@ function FilesPanel({
             {file?.text && <span className="cw-file-line-count">{file.lines} 行</span>}
             <button
               type="button"
+              className="cw-file-refresh"
+              aria-label="刷新文件"
+              title="刷新文件"
+              disabled={loading}
+              onClick={() => setReload((value) => value + 1)}
+            >
+              <RefreshCw size={16} strokeWidth={1.75} className={loading ? 'cw-layout-spin' : undefined} />
+              刷新
+            </button>
+            <button
+              type="button"
               className="cw-icon-button"
               aria-label="复制路径"
               title="复制路径"
@@ -331,15 +380,45 @@ function FilesPanel({
             </button>
           </header>
           {file?.truncated && <div className="cw-file-warning">文件过大，只显示前 1 MB</div>}
-          <div className="cw-panel-scroll cw-file-content">
-            {error ? (
-              <RequestError message={error} />
+          {error && (
+            <div className="cw-file-warning" role="alert">
+              {error}
+              {file ? '；保留上次内容。' : ''}
+            </div>
+          )}
+          <div
+            className={`cw-panel-scroll cw-file-content${isHtmlFile(path) ? ' cw-file-html' : isMarkdownFile(path) ? ' cw-file-markdown' : ''}`}
+            aria-busy={loading}
+          >
+            {error && !file ? (
+              <div className="cw-layout-empty">无法读取文件，请点击刷新重试。</div>
             ) : !file ? (
               <div className="cw-layout-loading" role="status" aria-label="文件">
                 <LoaderCircle size={16} strokeWidth={1.75} className="cw-layout-spin" />
               </div>
             ) : !file.text ? (
               <div className="cw-layout-empty">不是文本文件</div>
+            ) : isHtmlFile(path) ? (
+              <HtmlViewer
+                key={path}
+                html={file.content}
+                title={path}
+                truncated={file.truncated}
+                fill
+                revision={loaded?.revision}
+                refreshing={loading}
+                onRefresh={() => setReload((value) => value + 1)}
+                refreshError={error ? `${error}；保留上次内容。` : undefined}
+              />
+            ) : isMarkdownFile(path) ? (
+              <MarkdownFile
+                key={path}
+                text={file.content}
+                truncated={file.truncated}
+                cwd={cwd}
+                documentPath={path}
+                onOpenFile={onPath}
+              />
             ) : (
               <Code code={file.content} language={languageFor(path)} lines />
             )}
@@ -494,57 +573,41 @@ function DiffsPanel({ cwd, refreshKey }: { cwd: string; refreshKey: number }) {
   );
 }
 
-export function SidePanel({ cwd, tab, path, onTab, onClose, onPath, refreshKey = 0 }: SidePanelProps) {
+export function SidePanel({
+  cwd,
+  tab,
+  path,
+  onTab,
+  onClose,
+  onPath,
+  refreshKey = 0,
+  expanded,
+  onExpanded,
+  onError,
+}: SidePanelProps) {
   return (
-    <section className="cw-side-panel" aria-label={tab === 'files' ? '文件' : 'Diff'}>
-      <header className="cw-panel-tabs">
-        <div
-          className="cw-panel-tab-buttons"
-          role="tablist"
-          aria-label="工作区"
-          onKeyDown={(event) => {
-            if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
-              event.preventDefault();
-              const next =
-                event.key === 'Home'
-                  ? 'files'
-                  : event.key === 'End'
-                    ? 'diff'
-                    : tab === 'files'
-                      ? 'diff'
-                      : 'files';
-              onTab(next);
-              const tabs = event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]');
-              tabs[next === 'files' ? 0 : 1]?.focus();
-            }
-          }}
-        >
-          {(['files', 'diff'] as const).map((value) => (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === value}
-              tabIndex={tab === value ? 0 : -1}
-              key={value}
-              onClick={() => onTab(value)}
-            >
-              {value === 'files' ? '文件' : 'Diff'}
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          className="cw-icon-button cw-desktop-only"
-          onClick={onClose}
-          aria-label="收起面板"
-          title="收起面板 (Ctrl+Alt+B)"
-        >
-          <PanelRightClose size={16} strokeWidth={1.75} />
-        </button>
-      </header>
-      <div className="cw-panel-body" role="tabpanel" aria-label={tab === 'files' ? '文件' : 'Diff'}>
+    <section className="cw-side-panel" aria-label={panelLabels[tab]}>
+      <PanelHeader
+        tabs={panelTabs.map((value) => ({ value, label: panelLabels[value] }))}
+        value={tab}
+        onSelect={onTab}
+        expanded={expanded}
+        onExpanded={onExpanded}
+        onClose={onClose}
+      />
+      <div className="cw-panel-body" role="tabpanel" aria-label={panelLabels[tab]}>
         {tab === 'files' ? (
           <FilesPanel key={cwd} cwd={cwd} path={path} onPath={onPath} refreshKey={refreshKey} />
+        ) : tab === 'terminal' ? (
+          <Suspense
+            fallback={
+              <div className="cw-layout-loading" role="status" aria-label="终端">
+                <LoaderCircle className="cw-layout-spin" />
+              </div>
+            }
+          >
+            <TerminalPanel cwd={cwd} onError={onError} />
+          </Suspense>
         ) : (
           <DiffsPanel key={cwd} cwd={cwd} refreshKey={refreshKey} />
         )}

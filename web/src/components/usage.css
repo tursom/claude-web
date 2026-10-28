@@ -149,6 +149,74 @@
   min-width: 0;
   padding: 8px 10px 4px;
 }
+.cu-session-name {
+  margin: 0 10px 6px;
+  color: var(--fg-2);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.cu-session-heading {
+  display: flex;
+  align-items: center;
+}
+.cu-session-heading .cu-group {
+  flex: 1;
+}
+.cu-session-totals {
+  margin: 0;
+  padding: 4px 10px;
+}
+.cu-session-totals > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+}
+.cu-session-totals dt {
+  color: var(--fg-2);
+  font-size: var(--fs-xs);
+}
+.cu-session-totals dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+.cu-session-cost {
+  font-weight: 600;
+}
+.cu-session-note {
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
+}
+.cu-session-models {
+  margin: 4px 10px;
+  font-size: var(--fs-xs);
+}
+.cu-session-models summary {
+  cursor: pointer;
+  color: var(--fg-2);
+}
+.cu-session-model {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 8px 0;
+}
+.cu-session-model > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cu-session-model small {
+  width: 100%;
+  color: var(--fg-3);
+  font-size: inherit;
+}
 .cu-email {
   flex: 1;
   min-width: 0;

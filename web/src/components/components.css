@@ -445,10 +445,14 @@
   line-height: var(--lh-xs);
 }
 .cc-completion {
+  display: flex;
+  flex-direction: column;
   width: 360px;
+  overflow: hidden;
 }
 .cc-completion-query {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   min-height: 32px;
   padding: 0 8px;
@@ -457,9 +461,45 @@
   overflow-wrap: anywhere;
   font-family: var(--ff-mono);
 }
+.cc-completion-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cc-completion-list {
+  min-height: 0;
   max-height: 320px;
   overflow-y: auto;
+  overflow-x: hidden;
+}
+.cc-completion-help {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--fg-3);
+  font: var(--fs-xs)/var(--lh-xs) var(--ff-sans);
+  white-space: nowrap;
+}
+.cc-command-option {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  padding: 10px;
+}
+.cc-command-option > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cc-command-name {
+  font-family: var(--ff-mono);
+}
+.cc-command-option .cc-menu-description,
+.cc-command-option .cc-menu-hint {
+  grid-column: 1;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 .cc-match {
   color: var(--accent);
@@ -477,6 +517,44 @@
   font-size: var(--fs-xs);
   line-height: var(--lh-xs);
   animation: cc-pop var(--motion-dur) var(--motion-ease);
+}
+.cc-cache-settings {
+  width: min(340px, calc(100vw - 24px));
+  padding: 12px;
+}
+.cc-cache-settings p {
+  margin: 0 0 10px;
+  color: var(--fg-2);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: normal;
+}
+.cc-cache-settings .cc-menu-item {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.cc-cache-settings .cc-menu-item > span,
+.cc-cache-settings strong {
+  white-space: nowrap;
+}
+.cc-cache-settings strong {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+}
+.cc-cache-settings .cc-menu-item:disabled strong {
+  color: var(--fg-3);
+}
+.cc-cache-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
 }
 @keyframes cc-pop {
   from {

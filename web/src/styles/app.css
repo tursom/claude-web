@@ -146,6 +146,17 @@ p {
   min-width: 0;
   min-height: 0;
 }
+.main[hidden] {
+  display: none;
+}
+.panel-expanded > .panel-shell {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+.drawer.drawer-panel-expanded {
+  width: 100vw;
+}
 .topbar {
   display: flex;
   align-items: center;

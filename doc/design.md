@@ -12,12 +12,13 @@
 - 手机可用；能看项目文件和 git diff
 - 输入框参照官方 VS Code 客户端：图片附件、`@` 引用文件、斜杠命令菜单、切换模型和思考强度、缓存倒计时、上下文用量
 - 显示账号额度（与终端 `/usage` 一致），额度偏高或用完时在输入框处提醒
+- 项目级交互终端：真实 Shell、多终端、断线保留、屏幕恢复和手机辅助键，细节见 [terminal.md](terminal.md)
 
 不做：
 
 - 多用户。只有一个使用者，身份由 Pangolin 保证，后端不做登录
 - 自己存聊天记录。会话记录只用 Claude Code 自己的 JSONL
-- 网页上编辑文件、开终端
+- 网页上编辑文件
 - 推送通知（后续再考虑 Web Push）
 
 约束：
@@ -36,6 +37,7 @@ Pangolin (Traefik + SSO，校验身份，附加 Remote-* 头)
    ▼
 claude-web server (Node 22, Fastify，单进程单端口，同时托管前端静态文件)
    ├─ SessionManager：每个活跃会话一个 Runtime（一个 Agent SDK Query）
+   ├─ TerminalManager：按项目保留 PTY Shell，内存屏幕快照与独立进程生命周期
    ├─ REST：会话列表、历史消息、目录、文件、diff
    └─ WS：订阅会话、发消息、审批、中断
    │  Agent SDK（子进程）
@@ -97,7 +99,7 @@ const q = query({
 | `idle` | 进程活着，等待输入 | 收到 `result` 消息 |
 
 - 向 `closed` 会话发消息时自动建 Runtime（带 `resume`）。
-- `idle` 持续 `idleCloseMinutes`（默认 30）且没有客户端订阅时，关闭 Runtime。`waiting` 不超时：后台任务可能要等你回来审批。
+- `idle` 持续 `idleCloseMinutes`（默认 30）且没有客户端订阅时，关闭 Runtime；存在有效缓存且有待执行的到期前压缩时暂缓回收（见 4.5）。`waiting` 不超时：后台任务可能要等你回来审批。
 - 同时活跃的 Runtime 最多 `maxLiveSessions` 个（默认 4），超出时拒绝新建并提示先释放。
 - 服务重启后所有 Runtime 消失，待审批请求作废；会话本身仍可从 JSONL 恢复。
 
@@ -107,6 +109,14 @@ Claude Code 不对会话文件加锁，两个进程同时写同一会话会把�
 
 - 网页 → 终端：点「释放」或等空闲超时，然后 `claude --resume <id>`。
 - 终端 → 网页：先退出终端里的会话再在网页打开。若会话 JSONL 在 60 秒内被修改过且网页没有它的 Runtime，网页发送前给出「终端可能正在使用」的确认提示。
+
+### 4.5 缓存到期前自动压缩
+
+`autoCompactBeforeExpiry` 有效默认值为 true。输入区缓存浮层提供全局开关；生产启动将配置路径交给设置接口，PATCH 串行读取最新配置、只更新该布尔字段并以同目录临时文件原子替换，保存成功后才更改共享 Config，重启后沿用。关闭只禁止后续自动触发，不中断已运行的命令。
+
+复用 SessionManager 的 30 秒维护周期和会话锁，无网页定时器。Runtime 在真实主会话非压缩回复报告缓存用量时记录缓存与待压缩内容；synthetic、零用量、子代理、历史元信息不重新安排。缓存原 TTL 大于 5 分钟、剩余时间为 (0, 5 分钟]、CLI 提供 compact、Runtime 空闲且无排队/审批/回合收尾、无已知限额时，发送普通 SDK `/compact` 命令。触发前清除待压缩标记，失败与中断不重试；后续新工作才重新置位。手动压缩、CLI 自动压缩以及 clear 也清除计划；压缩边界清除旧缓存显示。模型/思考切换后等待新的缓存响应。
+
+离线但待压缩的 Runtime 暂缓空闲回收；关闭开关、缓存过期、额度不足或尝试完成后恢复原回收规则。服务重启/主动释放后不自行恢复旧会话，避免与终端争用历史文件。缓存时间是客户端估计，压缩自身有用量成本；不保证零成本或每次都命中缓存。自动发送的本地事件携带 `autoCompactBeforeExpiry`，存活 Runtime 的压缩卡显示「缓存到期前自动」；CLI 历史仍保留原生命令记录。
 
 ## 5. 实时通道与断线续传
 
@@ -148,13 +158,15 @@ Runtime 存活期间只有它在写这个会话，所以 `history + events` 就�
 `cache` 的算法：
 
 - 只看主会话的 assistant 消息（`parent_tool_use_id` 为空）。子代理有自己的缓存，不计入。
-- 每收到一条，把 `refreshedAt` 设为当前时间；同时看 `message.usage.cache_creation`：`ephemeral_1h_input_tokens > 0` 时 `ttlSec = 3600`，`ephemeral_5m_input_tokens > 0` 时 `ttlSec = 300`；两者都为 0（只读了缓存）时沿用上一次的 `ttlSec`。读缓存同样会刷新过期时间。
+- 仅对有实际缓存用量的新主会话响应更新 `refreshedAt`：优先使用有效且不在未来的消息 `timestamp`，老版本实时消息未带时间时才用接收时间。已在历史中出现、回放或同一响应的重复块不会续期；倒计时也不因迟到旧消息倒退。`message.usage.cache_creation` 中 `ephemeral_1h_input_tokens > 0` 时 `ttlSec = 3600`，`ephemeral_5m_input_tokens > 0` 时 `ttlSec = 300`；只读缓存时沿用已知 TTL。synthetic、子代理和零缓存用量不刷新。
 - 从来没有确定过 `ttlSec` 时，不下发 `cache`。
-- 会话没有 Runtime 时，用会话的 `lastModified` 当 `refreshedAt`，`ttlSec` 取 JSONL 里最后一条主会话 assistant 消息的 usage 判断；判断不出就不下发。
+- 历史会话只使用记录里的响应时间，禁止用会话 `lastModified` / 文件 mtime 推算缓存（退出、费用落盘、重命名都可能更新时间）。压缩摘要/边界之后保留的旧 assistant 不代表摘要前缀仍被缓存；只有时间明确晚于压缩的新响应才能恢复缓存信息。时间缺失、非法、未来或压缩后的缓存状态不明时，不下发倒计时，界面显示暂时无法确认缓存。历史缓存元信息不会自行安排后台压缩。
 
 ### 5.4 消息渲染
 
 历史消息（JSONL）和实时消息都是 Anthropic 消息格式（assistant 的 content blocks，user 的 tool_result），前端用同一套渲染器。`parent_tool_use_id` 不为空的是子代理消息，折叠在对应的 Agent 工具调用下面。
+
+历史压缩命令可能是带 `isCompletedLocalCommand` 标记的 `command-name/command-message/command-args` 文本，而不是普通 `/compact`。只对完整匹配且有此标记的记录解析，合并相应摘要与成功/失败输出；SDK 把摘要放在保留旧回复之前时，将同一张卡移至命令位置，保留普通回复顺序。已有完成状态或时间表明是另一轮尝试时分开显示；普通用户粘贴的标签、其他命令和不完整标签不隐藏。仅调整展示，不重写历史或执行命令。
 
 ### 5.5 账号额度（usage）
 
@@ -165,6 +177,7 @@ Runtime 存活期间只有它在写这个会话，所以 `history + events` 就�
 | 来源 | 拿到什么 | 什么时候 |
 |---|---|---|
 | `/usage` 报告 | assistant 消息上的 `usage_report.rate_limits`：`limits[]`（`kind`、`group`、`percent`、`resets_at`、`scope`、`severity`、`is_active`）和 `extra_usage` | 探针刷新时，见下 |
+| 当前会话用量 | 已有主会话累计 result；缺失则读取历史 JSONL `cost-state` 的 `totalCostUSD` / `modelUsage` | 显示 result/saved 来源；运行中保留最近完成回合或保存的统计，不轮询。会话与工作区先授权再读取；仅同 UUID 的已保存记录，流式读取且不改 JSONL。不调用 SDK `get_usage`（即使 skipBehaviors 仍会查询账号额度），不累加各轮、不读账号探针 session。费用为估算。 |
 | `accountInfo()` | `email`、`subscriptionType` | 跟探针一起读 |
 | `rate_limit_event` | `status`（`allowed` / `allowed_warning` / `rejected`）、`resetsAt`、`utilization`、`errorCode` | 任一 Runtime 收到时，实时 |
 
@@ -184,11 +197,12 @@ const q = query({
 
 - 读到带 `usage_report` 的 assistant 消息后，调 `q.accountInfo()`，然后关闭。20 秒超时。
 - 同一时刻最多一个探针，并发的刷新请求共用同一次结果。探针不占 `maxLiveSessions`。
+- 所有入口（含手动刷新、重连、限额事件）共用至少 60 秒的尝试间隔。失败或报告缺少额度行时，从失败完成时起按 1、2、4、8、15 分钟退避，上限 15 分钟；成功拿到额度行数组（包括空数组）后重置。
 - 刷新时机：
   - WS 连上时，数据超过 5 分钟就刷新
   - 任一会话产生 `result` 后，数据超过 2 分钟就刷新
-  - 收到 `rate_limit_event` 且 `status` 变化时，立即刷新
-  - 前端发 `usage.refresh`（打开额度浮层、点刷新按钮）；距上次刷新不到 10 秒时忽略
+  - 收到 `rate_limit_event` 且 `status` 变化时，立即更新提醒；探针仍受统一间隔和退避限制
+  - 前端发 `usage.refresh`（打开额度浮层、点刷新按钮），同样遵守统一间隔和退避
 - 没有任何 WS 连接时不刷新，也不定时轮询。
 
 `usage` 的结构：
@@ -205,8 +219,8 @@ type Usage = {
 ```
 
 - `error`：
-  - `"unavailable"`：拿到的报告里没有 `usage_report`，或 `rate_limits` 为 `null`。比如 API Key 登录、`setup-token`、按用量计费的账号。
-  - `"failed"`：探针出错或超时。这时保留上一次的 `limits`，前端提示数据是旧的。
+  - `"unavailable"`：尚无成功快照，且报告缺少 `usage_report`、`rate_limits` 或 `limits` 数组。这可能是账号不支持，也可能是 CLI 内部额度请求失败。
+  - `"failed"`：探针出错、超时，或已有成功快照但本次报告缺少额度行。保留上一次数据和 `fetchedAt`，前端提示更新时间；不能把 CLI 内部的 429/缺失报告当成新鲜的空额度。上述不可用/失败均退避。
 - `limited`：最近一次 `rate_limit_event` 是 `rejected` 时填入，时间统一换算成毫秒。之后收到 `allowed` 或 `allowed_warning`、或者过了 `resetsAt`，就清空。`allowed_warning` 不单独处理，偏高的提醒看 `limits` 里的 `severity`。
 
 ## 6. 工具审批与提问
@@ -233,18 +247,24 @@ type Usage = {
 
 - 目录树：按需逐级展开；隐藏 `.git`，`node_modules` 等大目录只显示不展开
 - 文件内容：仅文本文件，上限 1 MB，超出时提示截断
+- HTML：复用文本读取接口，普通预览使用 `sandbox=""` iframe 的 `srcdoc`；最先插入 CSP，只允许内联 CSS 和 data 图片。用户选择「交互预览」时仅改为 `sandbox="allow-scripts"` 和 `script-src 'unsafe-inline'`，允许脚本生成原型与交互，但不授予同源权限，不放行外部资源、网络接口、表单或内嵌框架。切换模式或成功刷新文件时重建 iframe；同文件刷新保留模式，交互授权不跨文件或浏览器整页刷新保存。完整 `.html` / `.htm` 文件及聊天中的 html/htm 代码块均可切换源码与预览、放大查看。文件预览沿用 1 MB 上限，截断内容不渲染；不新增原始 HTML 的同源服务接口。
 - git diff：`execFile("git", ["-C", cwd, "diff", ...])`，不经 shell；支持工作区、暂存区两种
 - 对话中的 Edit/Write 工具调用直接用工具输入（`old_string/new_string`、`content`）在消息里渲染 diff，不走后端
 
 ## 8. 接口
+
+终端扩展的 REST、WS 及进程语义见 [terminal.md](terminal.md)。终端复用 `/ws` 的鉴权连接，`terminal.*` 消息独立于聊天的 epoch/seq；不会消费 Claude Runtime 名额。
 
 ### 8.1 REST
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/me` | 返回 `Remote-Email`、`Remote-Name`，前端显示用 |
+| GET | `/api/settings` | 返回全局 `autoCompactBeforeExpiry` 开关，有效缺省 true。 |
+| PATCH | `/api/settings` | 仅接受布尔 `autoCompactBeforeExpiry`，沿用身份和 Origin 校验；保存后更新调度，失败保留旧设置。 |
 | GET | `/api/sessions?cwd=` | `listSessions({dir})` 合并 Runtime 状态；不带 `cwd` 时返回全部项目，按 `cwd` 分组 |
 | GET | `/api/sessions/:id/messages?offset=&limit=` | 历史消息，分页 |
+| GET | `/api/sessions/:id/usage` | 只读已有会话累计费用和 token，返回 `{usage, source}`，source 为 saved / result / unavailable。不创建或恢复 Query、不发送模型消息、不查询账号额度；没有本地统计或手动刷新时读取，面板无定时轮询，result 到达直接更新。 |
 | POST | `/api/sessions` | `{cwd, permissionMode}` 新建会话，返回 `sessionId` |
 | POST | `/api/sessions/:id/release` | 关闭 Runtime |
 | GET | `/api/dirs?path=` | 浏览 `workspaceRoots` 下的目录，新建会话时选 cwd |
@@ -253,7 +273,7 @@ type Usage = {
 | GET | `/api/git/diff?cwd=&staged=` | git diff |
 | GET | `/api/fs/search?cwd=&q=` | `@` 引用文件用的模糊搜索，最多 50 条，包含目录。文件列表取 `git ls-files --cached --others --exclude-standard`（不是 git 仓库时遍历目录，跳过 `.git`、`node_modules`），按 `cwd` 缓存 30 秒 |
 | GET | `/api/models` | 模型列表。取任意 Runtime 的 `supportedModels()` 结果并缓存在内存里；还没有任何 Runtime 时返回空数组 |
-| GET | `/api/commands?cwd=` | 斜杠命令列表。按 `cwd` 缓存该目录下 Runtime 的 `supportedCommands()` 结果，收到命令变更消息时刷新；没有缓存时返回空数组 |
+| GET | `/api/commands?cwd=&discover=true` | 斜杠命令列表。优先使用该项目 Runtime 的命令缓存，收到命令变更消息时刷新。打开菜单时携带 `discover=true`，缓存缺失则启动短命、不保存会话的 SDK Query，仅读取初始化命令，禁用 hooks/MCP、不发送模型消息；15 秒超时并关闭。同项目并发共享发现过程；无 discover 时保留空缓存返回空数组行为。 |
 | POST | `/api/uploads` | 上传一张图片（multipart，png / jpeg / gif / webp，≤5 MB），返回 `{ id }`。文件放在服务的临时目录，1 小时后删除 |
 
 ### 8.2 WS（`/ws`，JSON 文本帧）
@@ -288,7 +308,7 @@ type Usage = {
 
 ## 9. 前端
 
-- Vite + React + TypeScript + Tailwind v4；图标 lucide-react；弹窗/菜单用 Radix 无样式原语；Markdown 用 react-markdown，代码高亮用 shiki，diff 用 `diff` 包自己渲染
+- Vite + React + TypeScript + Tailwind v4；图标 lucide-react；弹窗/菜单用 Radix 无样式原语；Markdown 用 react-markdown + remark-gfm，聊天和 Markdown 文件复用同一渲染器；Mermaid 按需导入，使用 strict 模式，串行初始化/渲染以隔离全局配置，流式更新防抖并丢弃过期结果。代码高亮用 shiki，diff 用 `diff` 包自己渲染
 - 页面、组件、文案、token 全部按 [ui.md](ui.md)，视觉参考 [ui/mockup.html](ui/mockup.html)
 
 ## 10. 配置与部署

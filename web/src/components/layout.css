@@ -472,6 +472,34 @@
   padding-left: 4px;
   padding-right: 4px;
 }
+.cw-file-refresh {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--r);
+  background: transparent;
+  color: var(--fg-2);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.cw-file-refresh:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+.cw-file-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  padding: 4px 8px 4px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+}
 .cw-file-path {
   flex: 1;
   font-family: var(--ff-mono);

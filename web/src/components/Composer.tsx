@@ -21,6 +21,13 @@ import type { Command, Effort, Meta, Mode, Model, Session } from '../../../share
 import { api } from '../api/client';
 import './components.css';
 import { UsageIndicator } from './Usage';
+import { CacheSettings } from './CacheSettings';
+import {
+  detectCompletion as findCompletion,
+  insertCompletion,
+  matchCommands,
+  type Completion,
+} from './completion';
 
 export interface ComposerProps {
   session: Session;
@@ -33,12 +40,6 @@ interface Attachment {
   key: string;
   preview: string;
   id?: string;
-}
-interface Completion {
-  kind: 'command' | 'file';
-  query: string;
-  start: number;
-  end: number;
 }
 const efforts: { value: Effort; label: string }[] = [
   { value: 'low', label: '低' },
@@ -175,6 +176,8 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
   const [now, setNow] = useState(Date.now());
   const [models, setModels] = useState<Model[]>([]);
   const [commands, setCommands] = useState<Command[]>([]);
+  const [commandsLoading, setCommandsLoading] = useState(false);
+  const [commandsError, setCommandsError] = useState('');
   const [paths, setPaths] = useState<string[]>([]);
   const [completion, setCompletion] = useState<Completion | null>(null);
   const [active, setActive] = useState(0);
@@ -185,6 +188,7 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
   const textarea = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const listId = useId();
+  const tabLeaving = useRef(false);
   const currentModel = models.find((model) => model.value === (selectedModel ?? meta.model));
   const currentEffort = selectedEffort ?? meta.effort;
   const mode =
@@ -194,13 +198,7 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
     currentModel?.supportedEffortLevels?.includes(effort.value),
   );
   const commandQuery = completion?.kind === 'command' ? completion.query.toLowerCase() : '';
-  const matches = commands
-    .filter((command) => command.name.toLowerCase().includes(commandQuery))
-    .sort(
-      (a, b) =>
-        Number(b.name.toLowerCase().startsWith(commandQuery)) -
-        Number(a.name.toLowerCase().startsWith(commandQuery)),
-    );
+  const matches = matchCommands(commands, commandQuery);
   const options = completion?.kind === 'command' ? matches.map((command) => command.name) : paths;
   const hasInput = !!text.trim() || attachments.length > 0;
   const uploading = attachments.some((image) => !image.id);
@@ -241,17 +239,31 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
         if (!cancelled) setModels(value);
       })
       .catch(() => {});
-    void api<Command[]>(`/api/commands?cwd=${encodeURIComponent(session.cwd)}`)
-      .then((value) => {
-        if (!cancelled) setCommands(value);
-      })
-      .catch(() => {
-        if (!cancelled) setCommands([]);
-      });
     return () => {
       cancelled = true;
     };
   }, [session.cwd, session.status, menu]);
+  useEffect(() => {
+    let cancelled = false;
+    const discover = completion?.kind === 'command';
+    setCommandsLoading(discover);
+    setCommandsError('');
+    void api<Command[]>(
+      `/api/commands?cwd=${encodeURIComponent(session.cwd)}${discover ? '&discover=true' : ''}`,
+    )
+      .then((value) => {
+        if (!cancelled) setCommands(value);
+      })
+      .catch((error) => {
+        if (!cancelled) setCommandsError(error.message);
+      })
+      .finally(() => {
+        if (!cancelled) setCommandsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session.cwd, session.status, completion?.kind]);
   useEffect(() => {
     setActive(0);
     setPaths([]);
@@ -291,6 +303,7 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
   }, [active, listId]);
   useEffect(() => {
     const escape = (event: globalThis.KeyboardEvent) => {
+      if ((event.target as HTMLElement)?.closest('[data-terminal-focus]')) return;
       if (
         event.key !== 'Escape' ||
         event.defaultPrevented ||
@@ -314,12 +327,7 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
   }, [session.status, menu, completion, text, attachments.length, action]);
 
   const detectCompletion = (value: string, cursor: number) => {
-    const prefix = value.slice(0, cursor);
-    const file = /@([^\s@]*)$/.exec(prefix);
-    const command = /^\/([^\s]*)$/.exec(prefix);
-    if (file) setCompletion({ kind: 'file', query: file[1], start: cursor - file[0].length, end: cursor });
-    else if (command) setCompletion({ kind: 'command', query: command[1], start: 0, end: cursor });
-    else setCompletion(null);
+    setCompletion(findCompletion(value, cursor));
   };
   const focus = () => textarea.current?.focus();
   const insertToken = (kind: Completion['kind']) => {
@@ -338,10 +346,9 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
   };
   const choose = (value: string) => {
     if (!completion) return;
-    const insertion = `${completion.kind === 'file' ? '@' : '/'}${value} `;
-    const next = text.slice(0, completion.start) + insertion + text.slice(completion.end);
-    const cursor = completion.start + insertion.length;
-    setText(next);
+    const next = insertCompletion(text, completion, value);
+    const cursor = next.cursor;
+    setText(next.text);
     setCompletion(null);
     requestAnimationFrame(() => {
       focus();
@@ -377,10 +384,25 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
             : 0,
         );
       }
-      if (event.key === 'Enter') {
+      if (event.key === 'Tab' && !event.shiftKey && options[active]) {
+        event.preventDefault();
+        event.stopPropagation();
+        choose(options[active]);
+      } else if (event.key === 'Tab') {
+        tabLeaving.current = true;
+        setCompletion(null);
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         if (options[active]) choose(options[active]);
+        else if (!commandsLoading && !mobile) submit();
       }
+      if (event.key === 'Enter' && event.shiftKey) setCompletion(null);
+      if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key))
+        requestAnimationFrame(() => {
+          const el = textarea.current;
+          if (el) detectCompletion(el.value, el.selectionStart);
+        });
       return;
     }
     if (event.key === 'Enter' && !event.shiftKey && !mobile) {
@@ -433,10 +455,11 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
     ? meta.cache.refreshedAt + meta.cache.ttlSec * 1000 - Math.max(now, meta.cache.refreshedAt)
     : 0;
   const minutes = Math.ceil(remaining / 60000);
-  const cacheTip =
-    remaining > 0
-      ? `提示缓存还剩 ${minutes} 分钟（${meta.cache?.ttlSec === 3600 ? '1 小时缓存' : '5 分钟缓存'}）。过期后，下一条消息要重新写入缓存，消耗的用量更多。`
-      : '提示缓存已过期，下一条消息会重新写入缓存。';
+  const cacheTip = !meta.cache
+    ? '暂时无法确认缓存是否有效。'
+    : remaining > 0
+      ? `缓存还剩 ${minutes} 分钟。`
+      : '缓存已过期，继续对话会多用一些额度。';
   const compactTokens = (value: number) =>
     value >= 1000 ? `${Number((value / 1000).toFixed(1))}k` : String(value);
 
@@ -579,15 +602,18 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
             >
               <SquareSlash size={16} strokeWidth={1.75} />
             </button>
-            {meta.cache && (
-              <Info
-                text={cacheTip}
-                className={remaining <= 0 ? 'cc-expired' : remaining <= 300000 ? 'cc-warn' : ''}
-              >
-                <Clock size={16} strokeWidth={1.75} />
-                <span>{remaining <= 0 ? '已过期' : remaining < 60000 ? '<1m' : `${minutes}m`}</span>
-              </Info>
-            )}
+            <CacheSettings
+              description={cacheTip}
+              onError={onError}
+              className={
+                !meta.cache ? '' : remaining <= 0 ? 'cc-expired' : remaining <= 300000 ? 'cc-warn' : ''
+              }
+            >
+              <Clock size={16} strokeWidth={1.75} />
+              <span>
+                {!meta.cache ? '缓存' : remaining <= 0 ? '已过期' : remaining < 60000 ? '<1m' : `${minutes}m`}
+              </span>
+            </CacheSettings>
             {meta.context && meta.context.percentage >= 50 && (
               <span className="cc-desktop">
                 <Info
@@ -757,6 +783,10 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
           onOpenAutoFocus={(event) => event.preventDefault()}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
+            if (tabLeaving.current) {
+              tabLeaving.current = false;
+              return;
+            }
             focus();
           }}
           onInteractOutside={(event) => {
@@ -764,8 +794,11 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
           }}
         >
           <div className="cc-completion-query">
-            {completion?.kind === 'file' ? '@' : '/'}
-            {completion?.query}
+            <span className="cc-completion-text">
+              {completion?.kind === 'file' ? '@' : '/'}
+              {completion?.query}
+            </span>
+            <span className="cc-completion-help">↑↓ 选择 · Tab 补全</span>
           </div>
           <div
             role="listbox"
@@ -773,58 +806,75 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
             aria-label={completion?.kind === 'file' ? '引用文件' : '命令'}
             className="cc-completion-list"
           >
-            {completion?.kind === 'command'
-              ? matches.length
-                ? matches.map((command, index) => (
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={active === index}
-                      id={`${listId}-${index}`}
-                      className={`cc-menu-item${active === index ? ' cc-highlighted' : ''}`}
-                      key={command.name}
-                      onMouseEnter={() => setActive(index)}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => choose(command.name)}
-                    >
-                      <span />
-                      <span>
-                        <Highlight text={`/${command.name}`} query={completion.query} />
+            {completion?.kind === 'command' ? (
+              matches.length ? (
+                matches.map((command, index) => (
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={active === index}
+                    id={`${listId}-${index}`}
+                    className={`cc-menu-item cc-command-option${active === index ? ' cc-highlighted' : ''}`}
+                    key={command.name}
+                    onMouseEnter={() => setActive(index)}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => choose(command.name)}
+                  >
+                    <span className="cc-command-name">
+                      <Highlight text={`/${command.name}`} query={completion.query} />
+                    </span>
+                    {command.argumentHint && (
+                      <span className="cc-menu-hint" title={command.argumentHint}>
+                        {command.argumentHint}
                       </span>
-                      <span className="cc-menu-hint">{command.argumentHint}</span>
-                      <span className="cc-menu-description">{command.description}</span>
-                    </button>
-                  ))
-                : !commands.length && <div className="cc-menu-empty">发送第一条消息后可用</div>
-              : paths.map((path, index) => {
-                  const slash = path.replace(/\/$/, '').lastIndexOf('/') + 1;
-                  return (
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={active === index}
-                      id={`${listId}-${index}`}
-                      className={`cc-menu-item${active === index ? ' cc-highlighted' : ''}`}
-                      key={path}
-                      onMouseEnter={() => setActive(index)}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => choose(path)}
-                    >
-                      {path.endsWith('/') ? (
-                        <Folder size={16} strokeWidth={1.75} />
-                      ) : (
-                        <File size={16} strokeWidth={1.75} />
-                      )}
-                      <span className="cc-ellipsis">
-                        <span className="cc-muted">
-                          <Highlight text={path.slice(0, slash)} query={completion?.query ?? ''} />
-                        </span>
-                        <Highlight text={path.slice(slash)} query={completion?.query ?? ''} />
+                    )}
+                    <span className="cc-menu-description" title={command.description}>
+                      {command.description}
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <div className="cc-menu-empty" role="status">
+                  {commandsLoading
+                    ? '正在读取命令…'
+                    : commandsError
+                      ? `操作失败：${commandsError}`
+                      : commands.length
+                        ? '没有匹配的命令'
+                        : '当前项目没有可用命令'}
+                </div>
+              )
+            ) : (
+              paths.map((path, index) => {
+                const slash = path.replace(/\/$/, '').lastIndexOf('/') + 1;
+                return (
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={active === index}
+                    id={`${listId}-${index}`}
+                    className={`cc-menu-item${active === index ? ' cc-highlighted' : ''}`}
+                    key={path}
+                    onMouseEnter={() => setActive(index)}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => choose(path)}
+                  >
+                    {path.endsWith('/') ? (
+                      <Folder size={16} strokeWidth={1.75} />
+                    ) : (
+                      <File size={16} strokeWidth={1.75} />
+                    )}
+                    <span className="cc-ellipsis">
+                      <span className="cc-muted">
+                        <Highlight text={path.slice(0, slash)} query={completion?.query ?? ''} />
                       </span>
-                      <span />
-                    </button>
-                  );
-                })}
+                      <Highlight text={path.slice(slash)} query={completion?.query ?? ''} />
+                    </span>
+                    <span />
+                  </button>
+                );
+              })
+            )}
           </div>
         </Popover.Content>
       </Popover.Portal>

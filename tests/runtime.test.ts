@@ -19,6 +19,8 @@ import { Runtime } from '../server/runtime.js';
 import { SessionManager } from '../server/session-manager.js';
 import { agentSdk, cacheMeta, closedMeta, InputQueue, sdkEnvironment } from '../server/sdk.js';
 import { registerWs } from '../server/ws.js';
+import * as savedUsage from '../server/saved-session-usage.js';
+import { UsageManager } from '../server/usage.js';
 
 const model = { value: 'sonnet', displayName: 'Sonnet', description: 'Test model' };
 const command = { name: 'compact', description: 'Compact', argumentHint: '' };
@@ -37,6 +39,20 @@ class FakeQuery {
     maxTokens: 180_000,
   }));
   readonly close = vi.fn(() => this.output.close());
+  readonly readUsage = vi.fn(async (_options: unknown) => ({
+    session: {
+      total_cost_usd: 7.5,
+      model_usage: {
+        opus: {
+          inputTokens: 10,
+          outputTokens: 20,
+          cacheReadInputTokens: 30,
+          cacheCreationInputTokens: 40,
+          costUSD: 7.5,
+        },
+      },
+    },
+  }));
 
   constructor(
     readonly args: QueryArgs,
@@ -50,6 +66,7 @@ class FakeQuery {
       setPermissionMode: this.setPermissionMode,
       applyFlagSettings: this.applyFlagSettings,
       getContextUsage: this.getContextUsage,
+      usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: this.readUsage,
       initializationResult: vi.fn(
         () =>
           initialization ??
@@ -157,7 +174,7 @@ const assistant = (creation?: Record<string, number>, parent: string | null = nu
     role: 'assistant',
     content: [{ type: 'text', text: 'hello' }],
     model: 'sonnet',
-    usage: { cache_creation: creation },
+    usage: { cache_creation: creation, cache_read_input_tokens: creation ? 0 : 100 },
   },
 });
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -202,15 +219,335 @@ describe('SDK boundary', () => {
     const previous = { refreshedAt: 100, ttlSec: 300 };
     expect(cacheMeta(assistant(), previous, 200)).toEqual({ refreshedAt: 200, ttlSec: 300 });
     expect(cacheMeta(assistant({ ephemeral_1h_input_tokens: 1 }, 'agent'), previous, 300)).toEqual(previous);
-    expect(closedMeta([assistant({ ephemeral_5m_input_tokens: 1 })], 123).cache).toEqual({
+    expect(cacheMeta({ ...assistant(), message: { model: '<synthetic>', usage: {} } }, previous, 300)).toBe(
+      previous,
+    );
+    expect(
+      cacheMeta({ ...assistant(), message: { usage: { cache_read_input_tokens: 0 } } }, previous, 300),
+    ).toBe(previous);
+    expect(
+      closedMeta([{ ...assistant({ ephemeral_5m_input_tokens: 1 }), timestamp: new Date(123).toISOString() }])
+        .cache,
+    ).toEqual({
       refreshedAt: 123,
       ttlSec: 300,
     });
-    expect(closedMeta([assistant({ ephemeral_5m_input_tokens: 1 }), assistant()], 123).cache).toBeUndefined();
+    expect(closedMeta([assistant({ ephemeral_5m_input_tokens: 1 }), assistant()]).cache).toBeUndefined();
+  });
+});
+
+describe('cache-expiry compaction', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+  });
+  afterEach(() => vi.useRealTimers());
+  const flush = () => vi.advanceTimersByTimeAsync(0);
+  async function warm(ttl = 3600) {
+    const value = manager();
+    const id = await value.create(directory, 'default');
+    await value.send(id, 'work');
+    fakes[0].emit(
+      assistant(ttl === 3600 ? { ephemeral_1h_input_tokens: 100 } : { ephemeral_5m_input_tokens: 100 }),
+    );
+    fakes[0].emit({ type: 'result', subtype: 'success' });
+    await flush();
+    return { value, id, runtime: value.get(id)!, started: Date.now(), fake: fakes[0] };
+  }
+  const texts = (fake: FakeQuery) => fake.received.map((message) => message.message.content);
+
+  it('holds an offline session past idle reaping, compacts at 55 minutes once and reaps after completion', async () => {
+    const { value, id, runtime, fake } = await warm();
+    await vi.advanceTimersByTimeAsync(55 * 60_000 - 1);
+    expect(value.get(id)).toBe(runtime);
+    expect(texts(fake)).toEqual(['work']);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(texts(fake)).toEqual(['work', '/compact']);
+    expect(runtime.messages().find((message) => message.autoCompactBeforeExpiry)).toMatchObject({
+      type: 'user',
+      message: { content: '/compact' },
+    });
+    fake.emit({ type: 'system', subtype: 'status', status: 'compacting' });
+    fake.emit(assistant({ ephemeral_1h_input_tokens: 1 }));
+    fake.emit({ type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'manual' } });
+    fake.emit({ type: 'result', subtype: 'success' });
+    await flush();
+    expect(runtime.meta.cache).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(31 * 60_000);
+    expect(value.get(id)).toBeUndefined();
+    expect(texts(fake)).toEqual(['work', '/compact']);
+  });
+
+  it('moves the deadline after new main-thread cache use, but not synthetic or subagent messages', async () => {
+    const { value, id, runtime, started, fake } = await warm();
+    vi.setSystemTime(started + 54 * 60_000);
+    await value.send(id, 'more work');
+    fake.emit(assistant());
+    fake.emit({ type: 'result', subtype: 'success' });
+    await flush();
+    const refreshed = runtime.meta.cache!.refreshedAt;
+    vi.setSystemTime(started + 55 * 60_000);
+    fake.emit(assistant({ ephemeral_1h_input_tokens: 100 }, 'subagent'));
+    fake.emit({
+      type: 'assistant',
+      message: { model: '<synthetic>', usage: { cache_read_input_tokens: 100 } },
+    });
+    await flush();
+    await value.reapIdle();
+    expect(runtime.meta.cache!.refreshedAt).toBe(refreshed);
+    expect(texts(fake)).toEqual(['work', 'more work']);
+    vi.setSystemTime(refreshed + 55 * 60_000);
+    await value.reapIdle();
+    await flush();
+    expect(texts(fake)).toEqual(['work', 'more work', '/compact']);
+  });
+
+  it('skips working, queued and approval-blocked sessions without interrupting them', async () => {
+    const { value, id, started, fake } = await warm();
+    await value.send(id, 'running');
+    const approval = fake.permission();
+    await value.send(id, 'queued');
+    vi.setSystemTime(started + 55 * 60_000);
+    await value.reapIdle();
+    await flush();
+    expect(texts(fake)).toEqual(['work', 'running']);
+    expect(fake.interrupt).not.toHaveBeenCalled();
+    value.get(id)!.respond({ requestId: value.get(id)!.pending[0].requestId, behavior: 'deny' });
+    await approval;
+    fake.emit({ type: 'result', subtype: 'success' });
+    await flush();
+    await value.reapIdle();
+    expect(texts(fake)).toEqual(['work', 'running', 'queued']);
+  });
+
+  it.each(['disabled', 'expired', 'short TTL', 'quota rejected', 'compact unsupported'])(
+    'does not send or retain an idle session when %s',
+    async (reason) => {
+      const { value, id, started, fake } = await warm(reason === 'short TTL' ? 300 : 3600);
+      if (reason === 'disabled') config.autoCompactBeforeExpiry = false;
+      if (reason === 'quota rejected') {
+        fake.emit({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } });
+        await flush();
+      }
+      if (reason === 'compact unsupported') {
+        fake.emit({ type: 'system', subtype: 'commands_changed', commands: [] });
+        await flush();
+      }
+      vi.setSystemTime(started + (reason === 'expired' ? 61 : 55) * 60_000);
+      await value.reapIdle();
+      expect(texts(fake)).toEqual(['work']);
+      expect(value.get(id)).toBeUndefined();
+    },
+  );
+
+  it('honors an account-wide limit observed from another session without probing usage', async () => {
+    const { value, id, fake, started } = await warm();
+    const usage = new UsageManager(config);
+    value.attachUsage(usage);
+    usage.observe({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } });
+    vi.setSystemTime(started + 55 * 60_000);
+    await value.reapIdle();
+    expect(value.get(id)).toBeUndefined();
+    expect(fakes).toHaveLength(1);
+    expect(texts(fake)).toEqual(['work']);
+    await usage.close();
+  });
+
+  it('does not act on restored cache metadata until this Runtime observes new cached model work', async () => {
+    const value = runtime();
+    await value.ready;
+    value.meta.cache = { refreshedAt: Date.now() - 55 * 60_000, ttlSec: 3600 };
+    expect(value.hasPendingCacheCompaction()).toBe(false);
+    expect(await value.compactBeforeExpiry()).toBe(false);
+    expect(fakes[0].received).toHaveLength(0);
+  });
+
+  it('does not renew cache or rearm compaction when a completed response is repeated', async () => {
+    const { value, id, fake, runtime, started } = await warm();
+    const original = runtime.messages().find((message) => message.type === 'assistant')!;
+    vi.setSystemTime(started + 54 * 60_000);
+    fake.emit({ ...original, uuid: randomUUID(), isReplay: true });
+    fake.emit(original);
+    await flush();
+    expect(runtime.meta.cache?.refreshedAt).toBe(started);
+    vi.setSystemTime(started + 55 * 60_000);
+    await value.reapIdle();
+    fake.emit({ type: 'system', subtype: 'compact_boundary' });
+    fake.emit({ type: 'result', subtype: 'success' });
+    await flush();
+    fake.emit(original);
+    await flush();
+    expect(runtime.meta.cache).toBeUndefined();
+    expect(runtime.hasPendingCacheCompaction()).toBe(false);
+    expect(texts(fake)).toEqual(['work', '/compact']);
+    expect(value.get(id)).toBe(runtime);
+  });
+
+  it('counts multiple assistant blocks from one model response as a single cache observation', async () => {
+    const value = runtime();
+    await value.send('work');
+    const started = Date.now();
+    const first = assistant({ ephemeral_1h_input_tokens: 1 });
+    const message = { ...first.message, id: 'one-model-response' };
+    fakes[0].emit({ ...first, message, timestamp: new Date(started).toISOString() });
+    await flush();
+    vi.setSystemTime(started + 40 * 60_000);
+    fakes[0].emit({ ...first, message, uuid: randomUUID(), timestamp: new Date().toISOString() });
+    await flush();
+    expect(value.meta.cache?.refreshedAt).toBe(started);
+  });
+
+  it('ignores historical assistant replays on resume even if the SDK omits replay markers', async () => {
+    const old = {
+      ...assistant({ ephemeral_1h_input_tokens: 1 }),
+      timestamp: new Date(Date.now() - 2 * 3600_000).toISOString(),
+    };
+    const value = new Runtime({
+      sessionId: randomUUID(),
+      cwd: directory,
+      mode: 'default',
+      config,
+      history: [old],
+      lastModified: Date.now(),
+    });
+    runtimes.push(value);
+    await value.ready;
+    const original = value.meta.cache;
+    fakes[0].emit({ ...old, timestamp: undefined });
+    await flush();
+    expect(value.meta.cache).toEqual(original);
+    expect(value.hasPendingCacheCompaction()).toBe(false);
+    expect(await value.compactBeforeExpiry()).toBe(false);
+    expect(fakes[0].received).toHaveLength(0);
+  });
+
+  it('does not schedule cold compaction for a delayed response with an expired recorded timestamp', async () => {
+    const value = runtime();
+    await value.ready;
+    fakes[0].emit({
+      ...assistant({ ephemeral_1h_input_tokens: 1 }),
+      timestamp: new Date(Date.now() - 2 * 3600_000).toISOString(),
+    });
+    await flush();
+    expect(value.hasPendingCacheCompaction()).toBe(false);
+    expect(await value.compactBeforeExpiry()).toBe(false);
+    expect(fakes[0].received).toHaveLength(0);
+  });
+
+  it.each(['model', 'effort'])('discards the old cache deadline after changing %s', async (kind) => {
+    const { runtime, started, fake } = await warm();
+    if (kind === 'model') await runtime.setModel('opus');
+    else await runtime.setEffort('medium');
+    vi.setSystemTime(started + 55 * 60_000);
+    expect(runtime.meta.cache).toBeUndefined();
+    expect(await runtime.compactBeforeExpiry()).toBe(false);
+    expect(texts(fake)).toEqual(['work']);
+  });
+
+  it.each(['manual', 'failed', 'interrupted'])(
+    'does not retry after a %s compaction until new work',
+    async (kind) => {
+      const { value, id, runtime, fake, started } = await warm();
+      vi.setSystemTime(started + 55 * 60_000);
+      if (kind === 'manual') await value.send(id, '/compact');
+      else await value.reapIdle();
+      await flush();
+      if (kind === 'interrupted') await runtime.interrupt();
+      fake.emit(assistant({ ephemeral_1h_input_tokens: 100 }));
+      fake.emit({ type: 'result', subtype: 'success', is_error: kind === 'failed' });
+      await flush();
+      await value.reapIdle();
+      expect(texts(fake)).toEqual(['work', '/compact']);
+      expect(runtime.hasPendingCacheCompaction()).toBe(false);
+      await value.send(id, 'new work');
+      fake.emit(assistant({ ephemeral_1h_input_tokens: 1 }));
+      fake.emit({ type: 'result', subtype: 'success' });
+      await flush();
+      expect(runtime.hasPendingCacheCompaction()).toBe(true);
+    },
+  );
+
+  it('serializes a user send at the deadline behind a single automatic command', async () => {
+    const { value, id, fake, started } = await warm();
+    vi.setSystemTime(started + 55 * 60_000);
+    await Promise.all([value.reapIdle(), value.send(id, 'user returned')]);
+    await flush();
+    expect(texts(fake)).toEqual(['work', '/compact']);
+    fake.emit({ type: 'result', subtype: 'success' });
+    await flush();
+    expect(texts(fake)).toEqual(['work', '/compact', 'user returned']);
+  });
+
+  it('does not reopen a released session or send after shutdown', async () => {
+    const { value, id, fake, started } = await warm();
+    await value.release(id);
+    vi.setSystemTime(started + 55 * 60_000);
+    await value.reapIdle();
+    await value.close();
+    await value.reapIdle();
+    expect(fakes).toHaveLength(1);
+    expect(texts(fake)).toEqual(['work']);
   });
 });
 
 describe('Runtime', () => {
+  it('reads saved counters during a first running turn without querying account usage', async () => {
+    const value = manager();
+    const id = await value.create(directory, 'default');
+    await value.send(id, 'ongoing work');
+    await tick();
+    expect(value.get(id)?.status).toBe('running');
+    const read = vi.spyOn(savedUsage, 'readSavedSessionUsage').mockResolvedValue({
+      total_cost_usd: 7.5,
+      modelUsage: {},
+    });
+    expect(await value.readSessionUsage(id)).toMatchObject({ source: 'saved', usage: { costUsd: 7.5 } });
+    expect(read).toHaveBeenCalledWith(id, directory);
+    expect(fakes[0].readUsage).not.toHaveBeenCalled();
+    expect(fakes[0].received).toHaveLength(1);
+    expect(fakes[0].interrupt).not.toHaveBeenCalled();
+    expect(value.get(id)?.status).toBe('running');
+  });
+  it('uses the latest completed cumulative result without disk or SDK reads, including clear to zero', async () => {
+    const value = manager();
+    const id = await value.create(directory, 'default');
+    const read = vi.spyOn(savedUsage, 'readSavedSessionUsage');
+    fakes[0].emit({ type: 'result', subtype: 'success', total_cost_usd: 3, modelUsage: {} });
+    await tick();
+    await value.send(id, 'next turn');
+    const results = await Promise.all([value.readSessionUsage(id), value.readSessionUsage(id)]);
+    for (const result of results) expect(result).toMatchObject({ source: 'result', usage: { costUsd: 3 } });
+    fakes[0].emit({ type: 'result', subtype: 'success', total_cost_usd: 0, modelUsage: {} });
+    await tick();
+    expect(await value.readSessionUsage(id)).toMatchObject({ source: 'result', usage: { costUsd: 0 } });
+    expect(fakes[0].readUsage).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+  it('reads saved counters for closed sessions without starting a query and enforces workspace access first', async () => {
+    const value = manager();
+    const session = persisted();
+    const read = vi
+      .spyOn(savedUsage, 'readSavedSessionUsage')
+      .mockResolvedValue({ total_cost_usd: 12.5, modelUsage: {} });
+    expect(await value.readSessionUsage(session.sessionId)).toMatchObject({
+      source: 'saved',
+      usage: { costUsd: 12.5 },
+    });
+    expect(read).toHaveBeenCalledWith(session.sessionId, directory);
+    expect(fakes).toHaveLength(0);
+    read.mockClear();
+    const outside = persisted(120000, path.dirname(directory));
+    await expect(value.readSessionUsage(outside.sessionId)).rejects.toMatchObject({ code: 'PATH_FORBIDDEN' });
+    expect(read).not.toHaveBeenCalled();
+  });
+  it('reports unavailable rather than querying the live CLI when no counters exist', async () => {
+    const value = manager();
+    const id = await value.create(directory, 'default');
+    vi.spyOn(savedUsage, 'readSavedSessionUsage').mockResolvedValue(null);
+    expect(await value.readSessionUsage(id)).toEqual({ source: 'unavailable', usage: null });
+    expect(fakes[0].readUsage).not.toHaveBeenCalled();
+    expect(fakes[0].received).toHaveLength(0);
+  });
   it('does not announce release or free the process slot until the spawned process exits', async () => {
     const value = manager();
     const id = await value.create(directory, 'default');
@@ -318,6 +655,27 @@ describe('Runtime', () => {
     await tick();
     expect(value.messages().some((message) => message.message?.content === 'three')).toBe(false);
     expect(value.messages().at(-1)?.interrupted).toBe(true);
+  });
+
+  it('cancels only the selected queued message and refuses to interrupt an already dispatched message', async () => {
+    const value = runtime();
+    const first = randomUUID(),
+      second = randomUUID(),
+      third = randomUUID();
+    await value.send('one', [], first);
+    await value.send('two', [], second);
+    await value.send('three', [], third);
+    value.cancelQueuedMessage(second);
+    expect(value.snapshot().events.find((e) => e.message?.uuid === second)?.message?.cancelled).toBe(true);
+    expect(value.events.at(-1)?.cancelledMessageIds).toEqual([second]);
+    expect(value.messages().some((m) => m.uuid === second)).toBe(false);
+    expect(() => value.cancelQueuedMessage(first)).toThrow('消息已开始执行');
+    expect(() => value.cancelQueuedMessage(second)).toThrow('消息已开始执行');
+    fakes[0].emit({ type: 'result', subtype: 'success' });
+    await tick();
+    expect(fakes[0].received.map((m) => m.uuid)).toEqual([first, third]);
+    expect(() => value.cancelQueuedMessage(third)).toThrow('消息已开始执行');
+    expect(fakes[0].interrupt).not.toHaveBeenCalled();
   });
 
   it('bounds initial snapshots to the most recent 200 historical messages', async () => {
@@ -568,6 +926,35 @@ describe('SessionManager', () => {
     expect(value.get(session.sessionId)?.subscribers).toBe(1);
   });
 
+  it('does not treat a recent saved-file modification as cache activity in closed snapshots', async () => {
+    const value = manager();
+    const session = persisted(0);
+    const responseAt = Date.now() - 2 * 3600_000;
+    const old = {
+      ...assistant({ ephemeral_1h_input_tokens: 1 }),
+      timestamp: new Date(responseAt).toISOString(),
+    };
+    vi.mocked(agentSdk.getSessionMessages).mockResolvedValue([old] as any);
+    const first = vi.fn();
+    await value.subscribe(session.sessionId, first);
+    expect(first.mock.calls[0][0]).toMatchObject({
+      status: 'closed',
+      meta: { cache: { refreshedAt: responseAt } },
+    });
+    session.lastModified = Date.now();
+    const second = vi.fn();
+    await value.subscribe(session.sessionId, second);
+    expect(second.mock.calls[0][0].meta.cache.refreshedAt).toBe(responseAt);
+    vi.mocked(agentSdk.getSessionMessages).mockResolvedValue([
+      { type: 'user', isCompactSummary: true, timestamp: new Date(responseAt + 30 * 60_000).toISOString() },
+      old,
+    ] as any);
+    const compacted = vi.fn();
+    await value.subscribe(session.sessionId, compacted);
+    expect(compacted.mock.calls[0][0].meta.cache).toBeUndefined();
+    expect(fakes).toHaveLength(0);
+  });
+
   it('caches models and commands, refreshes command changes, and assembles image blocks', async () => {
     const value = manager();
     expect(await value.models()).toEqual([]);
@@ -591,6 +978,32 @@ describe('SessionManager', () => {
 });
 
 describe('WebSocket', () => {
+  it('broadcasts individual queue cancellation and rejects cancelling an active prompt', async () => {
+    const app = Fastify();
+    const value = manager();
+    const id = await value.create(directory, 'default');
+    const active = randomUUID(),
+      queued = randomUUID();
+    await value.send(id, 'active', [], false, active);
+    await value.send(id, 'queued', [], false, queued);
+    await registerWs(app, value);
+    await app.ready();
+    const socket = await app.injectWS('/ws');
+    const frames: any[] = [];
+    socket.on('message', (data) => frames.push(JSON.parse(data.toString())));
+    try {
+      socket.send(JSON.stringify({ type: 'subscribe', sessionId: id }));
+      socket.send(JSON.stringify({ type: 'queue.cancel', sessionId: id, messageId: queued }));
+      await vi.waitFor(() => expect(frames.some((f) => f.cancelledMessageIds?.includes(queued))).toBe(true));
+      socket.send(JSON.stringify({ type: 'queue.cancel', sessionId: id, messageId: active }));
+      await vi.waitFor(() => expect(frames.some((f) => f.code === 'MESSAGE_NOT_QUEUED')).toBe(true));
+      expect(fakes[0].interrupt).not.toHaveBeenCalled();
+    } finally {
+      socket.terminate();
+      await value.close();
+      await app.close();
+    }
+  });
   it('lets an approval in one session pass a cold start in another on the same socket', async () => {
     const app = Fastify();
     const value = manager();

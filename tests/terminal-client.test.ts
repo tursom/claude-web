@@ -1,0 +1,61 @@
+import { describe, expect, it, vi } from 'vitest';
+import { TerminalClient } from '../web/src/api/terminal-client';
+import type { TerminalFrame } from '../shared/terminal';
+
+describe('terminal transport bridge', () => {
+  it('uses the application socket and only restores subscriptions on reconnect', () => {
+    const client = new TerminalClient();
+    const send = vi.fn(() => true);
+    client.attach(send);
+    const status = vi.fn();
+    client.onConnection(status);
+    expect(status).toHaveBeenLastCalledWith(false);
+    client.subscribe('one');
+    expect(send).not.toHaveBeenCalled();
+    client.connection(true);
+    expect(send).toHaveBeenLastCalledWith({ type: 'terminal.subscribe', terminalId: 'one' });
+    client.send({ type: 'terminal.input', terminalId: 'one', data: 'echo hello\r' });
+    client.connection(false);
+    expect(client.send({ type: 'terminal.input', terminalId: 'one', data: 'do not queue\r' })).toBe(false);
+    send.mockClear();
+    client.connection(true);
+    expect(send.mock.calls).toEqual([[{ type: 'terminal.subscribe', terminalId: 'one' }]]);
+  });
+  it('reference counts views and makes each new view request a fresh snapshot', () => {
+    const client = new TerminalClient();
+    const send = vi.fn(() => true);
+    client.attach(send);
+    client.connection(true);
+    client.subscribe('same');
+    client.subscribe('same');
+    expect(send).toHaveBeenCalledTimes(2);
+    send.mockClear();
+    client.unsubscribe('same');
+    expect(send).not.toHaveBeenCalled();
+    client.unsubscribe('same');
+    expect(send).toHaveBeenLastCalledWith({ type: 'terminal.unsubscribe', terminalId: 'same' });
+  });
+  it('fans out frames and cleans up views and old socket attachments', () => {
+    const client = new TerminalClient();
+    const first = vi.fn(() => true);
+    const detach = client.attach(first);
+    client.connection(true);
+    const listener = vi.fn();
+    const remove = client.listen(listener);
+    const frame = { type: 'terminal.list', cwd: '/workspace', terminals: [] } as TerminalFrame;
+    client.receive(frame);
+    expect(listener).toHaveBeenCalledWith(frame);
+    remove();
+    listener.mockClear();
+    client.receive(frame);
+    expect(listener).not.toHaveBeenCalled();
+    const second = vi.fn(() => true);
+    const dispose = client.attach(second);
+    detach();
+    expect(client.send({ type: 'ping' })).toBe(true);
+    expect(second).toHaveBeenCalledOnce();
+    dispose();
+    expect(client.isConnected()).toBe(false);
+    expect(client.send({ type: 'ping' })).toBe(false);
+  });
+});

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Menu from '@radix-ui/react-dropdown-menu';
 import {
@@ -15,15 +15,23 @@ import { emptyUsage, type Usage, type Session, type WireEvent } from '../../shar
 import { api, ApiError } from './api/client';
 import { SessionSocket } from './api/socket';
 import { allMessages, emptyState, prependHistory, reduceSession, type SessionState } from './store/sessions';
+import { sessionUsageFromMessages } from './store/session-usage';
+import { useSessionUsage } from './store/use-session-usage';
 import { Sidebar } from './components/Sidebar';
 import { SidePanel } from './components/SidePanel';
 import { ResizeHandle } from './components/ResizeHandle';
 import { NewSession } from './components/NewSession';
 import { Messages } from './components/Messages';
 import { Composer } from './components/Composer';
+import { MessageQueue } from './components/MessageQueue';
 import { PermissionCard } from './components/PermissionCard';
 import { TodoBar } from './components/TodoBar';
 import { UsageProvider, UsageNotice } from './components/Usage';
+import { terminalClient } from './api/terminal-client';
+import type { TerminalFrame } from '../../shared/terminal';
+
+type PanelTab = 'files' | 'diff' | 'terminal';
+type PageTab = 'chat' | PanelTab;
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -41,7 +49,9 @@ function save(key: string, value: unknown) {
 const labels = { running: '运行中', waiting: '待确认', idle: '空闲', closed: '未运行' };
 const getRoute = () => ({
   id: /^\/s\/([^/]+)/.exec(location.pathname)?.[1],
-  tab: (new URLSearchParams(location.search).get('tab') ?? 'chat') as 'chat' | 'files' | 'diff',
+  tab: (['files', 'diff', 'terminal'].includes(new URLSearchParams(location.search).get('tab') ?? '')
+    ? new URLSearchParams(location.search).get('tab')
+    : 'chat') as PageTab,
   path: new URLSearchParams(location.search).get('path') ?? undefined,
 });
 const short = (path: string) => path.replace(/^\/root(?=\/|$)/, '~');
@@ -59,8 +69,9 @@ export function App() {
   const [viewport, setViewport] = useState(innerWidth);
   const [sidebar, setSidebar] = useState(() => load('cw.sidebar', { open: true, width: 280 }));
   const [panel, setPanel] = useState(() =>
-    load('cw.panel', { open: true, width: 480, tab: 'diff' as 'files' | 'diff' }),
+    load('cw.panel', { open: true, width: 480, tab: 'diff' as PanelTab }),
   );
+  const [panelExpanded, setPanelExpanded] = useState(false);
   const [theme, setTheme] = useState<'system' | 'light' | 'dark'>(() => load('cw.theme', 'system'));
   const [leftDrawer, setLeftDrawer] = useState(false);
   const [rightDrawer, setRightDrawer] = useState(false);
@@ -98,7 +109,7 @@ export function App() {
     (message: string) => setToast(message.startsWith('操作失败：') ? message : `操作失败：${message}`),
     [],
   );
-  const navigate = useCallback((id?: string, tab: 'chat' | 'files' | 'diff' = 'chat', path?: string) => {
+  const navigate = useCallback((id?: string, tab: PageTab = 'chat', path?: string) => {
     const query = new URLSearchParams();
     if (tab !== 'chat') query.set('tab', tab);
     if (path) query.set('path', path);
@@ -130,39 +141,60 @@ export function App() {
     return () => clearInterval(timer);
   }, [refresh]);
   useEffect(() => {
-    const ws = new SessionSocket((frame: WireEvent) => {
-      if (frame.type === 'usage') {
-        setUsage(frame.usage);
-        setUsageRefreshing(frame.refreshing);
-        return;
-      }
-      if (frame.type === 'error') {
-        const pending = pendingSends.current.get(frame.requestId ?? '');
-        if (frame.code === 'TERMINAL_ACTIVE' && pending && pending.sessionId === frame.sessionId)
-          setConflict({ ...pending, seconds: frame.seconds ?? 0 });
-        else if (frame.code === 'MAX_LIVE_SESSIONS' || frame.code === 'SESSION_LIMIT')
-          setSessionError(frame.message as unknown as string);
-        else notify(String(frame.message));
-        return;
-      }
-      if (!frame.sessionId) return;
-      if (frame.type === 'event' && frame.message?.type === 'user' && frame.message.uuid)
-        pendingSends.current.delete(frame.message.uuid);
-      setStates((prev) => ({
-        ...prev,
-        [frame.sessionId]: reduceSession(prev[frame.sessionId] ?? emptyState(), frame),
-      }));
-      if (frame.type === 'status') {
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.sessionId === frame.sessionId ? { ...s, status: frame.status!, lastModified: Date.now() } : s,
-          ),
-        );
-      }
-      if (frame.type === 'event' && frame.message?.type === 'result') void refresh();
-    }, setConnected);
+    const ws = new SessionSocket(
+      (frame: WireEvent) => {
+        if (frame.type.startsWith('terminal.')) {
+          terminalClient.receive(frame as unknown as TerminalFrame);
+          return;
+        }
+        if (frame.type === 'usage') {
+          setUsage(frame.usage);
+          setUsageRefreshing(frame.refreshing);
+          return;
+        }
+        if (frame.type === 'error') {
+          if (frame.terminalId)
+            terminalClient.receive({
+              type: 'terminal.error',
+              terminalId: frame.terminalId,
+              code: frame.code,
+              message: String(frame.message),
+            });
+          const pending = pendingSends.current.get(frame.requestId ?? '');
+          if (frame.code === 'TERMINAL_ACTIVE' && pending && pending.sessionId === frame.sessionId)
+            setConflict({ ...pending, seconds: frame.seconds ?? 0 });
+          else if (frame.code === 'MAX_LIVE_SESSIONS' || frame.code === 'SESSION_LIMIT')
+            setSessionError(frame.message as unknown as string);
+          else notify(String(frame.message));
+          return;
+        }
+        if (!frame.sessionId) return;
+        if (frame.type === 'event' && frame.message?.type === 'user' && frame.message.uuid)
+          pendingSends.current.delete(frame.message.uuid);
+        setStates((prev) => ({
+          ...prev,
+          [frame.sessionId]: reduceSession(prev[frame.sessionId] ?? emptyState(), frame),
+        }));
+        if (frame.type === 'status') {
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.sessionId === frame.sessionId ? { ...s, status: frame.status!, lastModified: Date.now() } : s,
+            ),
+          );
+        }
+        if (frame.type === 'event' && frame.message?.type === 'result') void refresh();
+      },
+      (value) => {
+        setConnected(value);
+        terminalClient.connection(value);
+      },
+    );
     socket.current = ws;
-    return () => ws.close();
+    const detach = terminalClient.attach((frame) => ws.send(frame));
+    return () => {
+      detach();
+      ws.close();
+    };
   }, [notify, refresh]);
   useEffect(() => {
     if (connected) setBanner(false);
@@ -202,13 +234,23 @@ export function App() {
   }, [route.id, mobile, sessions, navigate]);
   useEffect(() => {
     if (route.tab !== 'chat') {
-      setPanel((p) => ({ ...p, open: true, tab: route.tab as 'files' | 'diff' }));
+      setPanel((p) => ({ ...p, open: true, tab: route.tab as PanelTab }));
       if (!mobile && !desktop) setRightDrawer(true);
     }
   }, [route.tab, mobile, desktop]);
+  useEffect(() => {
+    setPanelExpanded(false);
+  }, [route.id, panel.tab]);
   const session = sessions.find((s) => s.sessionId === route.id);
   const state = route.id ? (states[route.id] ?? emptyState()) : emptyState();
   const messages = allMessages(state);
+  const queuedMessages = messages.filter((message) => message.type === 'user' && message.queued);
+  const transcriptMessages = messages.filter((message) => !queuedMessages.includes(message));
+  const sessionUsage = useMemo(
+    () => (route.id ? sessionUsageFromMessages(allMessages(state), route.id) : null),
+    [route.id, state.history, state.events],
+  );
+  const sessionUsageState = useSessionUsage(route.id, state.epoch, sessionUsage);
   const status = states[route.id ?? '']?.status ?? session?.status ?? 'closed';
   const waitingQuestion =
     state.pending.length > 0 && state.pending.every((p) => p.toolName === 'AskUserQuestion');
@@ -220,14 +262,22 @@ export function App() {
       setSidebar((s) => ({ ...s, open }));
     } else setLeftDrawer(open);
   };
-  const setRight = (open: boolean) => (desktop ? setPanel((s) => ({ ...s, open })) : setRightDrawer(open));
+  const setRight = (open: boolean) => {
+    if (!open) setPanelExpanded(false);
+    if (desktop) setPanel((s) => ({ ...s, open }));
+    else setRightDrawer(open);
+  };
   let sidebarWidth = Math.max(220, Math.min(420, sidebar.width));
   let panelWidth = Math.max(360, Math.min(800, panel.width));
   let sidebarVisible = desktop && sidebar.open;
   const panelVisible = desktop && panel.open && !!session;
-  if (panelVisible && viewport - panelWidth - (sidebarVisible ? sidebarWidth : 0) < 480)
+  const expandedPanel = panelExpanded && !mobile && !!session && (desktop ? panelVisible : rightDrawer);
+  if (!expandedPanel && panelVisible && viewport - panelWidth - (sidebarVisible ? sidebarWidth : 0) < 480)
     panelWidth = Math.max(360, viewport - 480 - (sidebarVisible ? sidebarWidth : 0));
-  if (viewport - (panelVisible ? panelWidth : 0) - (sidebarVisible ? sidebarWidth : 0) < 480)
+  if (
+    !expandedPanel &&
+    viewport - (panelVisible ? panelWidth : 0) - (sidebarVisible ? sidebarWidth : 0) < 480
+  )
     sidebarVisible = false;
   const openFile = (path: string) => {
     navigate(route.id, 'files', path);
@@ -262,6 +312,7 @@ export function App() {
   };
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
+      if ((event.target as HTMLElement)?.closest('[data-terminal-focus]')) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b') {
         event.preventDefault();
         if (event.altKey) setRight(!(desktop ? panel.open : rightDrawer));
@@ -322,6 +373,9 @@ export function App() {
       onClose={() => setRight(false)}
       onPath={(path) => navigate(route.id, 'files', path)}
       refreshKey={messages.filter((m) => m.type === 'result').length}
+      expanded={panelExpanded}
+      onExpanded={setPanelExpanded}
+      onError={notify}
     />
   ) : null;
   const loadOlder = async () => {
@@ -356,12 +410,13 @@ export function App() {
     <UsageProvider
       usage={usage}
       refreshing={usageRefreshing}
+      session={session ? { name: title, ...sessionUsageState } : undefined}
       onRefresh={() => {
         socket.current?.send({ type: 'usage.refresh' });
       }}
     >
       <div
-        className="app"
+        className={`app${expandedPanel ? ' panel-expanded' : ''}`}
         style={{ '--sidebar-w': `${sidebarWidth}px`, '--panel-w': `${panelWidth}px` } as CSSProperties}
       >
         {(sidebarVisible || (mobile && !route.id)) && (
@@ -380,7 +435,7 @@ export function App() {
           </aside>
         )}
         {(!mobile || route.id) && (
-          <main className="main">
+          <main className="main" hidden={desktop && expandedPanel}>
             {session || route.id ? (
               <>
                 <header className="topbar">
@@ -463,13 +518,19 @@ export function App() {
                 </header>
                 {mobile && (
                   <nav className="mobile-tabs seg">
-                    {(['chat', 'files', 'diff'] as const).map((tab) => (
+                    {(['chat', 'files', 'diff', 'terminal'] as const).map((tab) => (
                       <button
                         key={tab}
                         className={route.tab === tab ? 'on' : ''}
                         onClick={() => navigate(route.id, tab)}
                       >
-                        {tab === 'chat' ? '对话' : tab === 'files' ? '文件' : 'Diff'}
+                        {tab === 'chat'
+                          ? '对话'
+                          : tab === 'files'
+                            ? '文件'
+                            : tab === 'diff'
+                              ? 'Diff'
+                              : '终端'}
                       </button>
                     ))}
                   </nav>
@@ -505,7 +566,7 @@ export function App() {
                         )}
                         <Messages
                           key={route.id}
-                          messages={messages}
+                          messages={transcriptMessages}
                           pending={state.pending}
                           status={status}
                           delta={state.delta}
@@ -532,6 +593,11 @@ export function App() {
                         <TodoBar messages={messages} />
                         <UsageNotice />
                         {sessionError && <p className="danger">{sessionError}</p>}
+                        <MessageQueue
+                          messages={queuedMessages}
+                          connected={connected}
+                          cancel={(messageId) => action('queue.cancel', { messageId })}
+                        />
                         {state.pending.length ? (
                           <PermissionCard
                             key={`${state.pending[0]?.requestId}:${connected}`}
@@ -568,14 +634,16 @@ export function App() {
         {panelVisible && (
           <section className="panel-shell">
             {sidePanel}
-            <ResizeHandle
-              side="right"
-              width={panelWidth}
-              min={360}
-              max={Math.min(800, viewport - 480 - (sidebarVisible ? sidebarWidth : 0))}
-              onWidth={(width) => setPanel((p) => ({ ...p, width }))}
-              onOpen={(open) => setPanel((p) => ({ ...p, open }))}
-            />
+            {!expandedPanel && (
+              <ResizeHandle
+                side="right"
+                width={panelWidth}
+                min={360}
+                max={Math.min(800, viewport - 480 - (sidebarVisible ? sidebarWidth : 0))}
+                onWidth={(width) => setPanel((p) => ({ ...p, width }))}
+                onOpen={(open) => setPanel((p) => ({ ...p, open }))}
+              />
+            )}
           </section>
         )}
         {!desktop && !mobile && (
@@ -589,11 +657,20 @@ export function App() {
                 </Dialog.Content>
               </Dialog.Portal>
             </Dialog.Root>
-            <Dialog.Root open={rightDrawer} onOpenChange={setRightDrawer}>
+            <Dialog.Root open={rightDrawer} onOpenChange={setRight}>
               <Dialog.Portal>
                 <Dialog.Overlay className="scrim" />
-                <Dialog.Content className="drawer drawer-right" aria-describedby={undefined}>
-                  <Dialog.Title className="sr-only">{panel.tab === 'files' ? '文件' : 'Diff'}</Dialog.Title>
+                <Dialog.Content
+                  className={`drawer drawer-right${expandedPanel ? ' drawer-panel-expanded' : ''}`}
+                  aria-describedby={undefined}
+                  onEscapeKeyDown={(event) => {
+                    if ((event.target as HTMLElement)?.closest('[data-terminal-focus]'))
+                      event.preventDefault();
+                  }}
+                >
+                  <Dialog.Title className="sr-only">
+                    {panel.tab === 'files' ? '文件' : panel.tab === 'diff' ? 'Diff' : '终端'}
+                  </Dialog.Title>
                   {sidePanel}
                 </Dialog.Content>
               </Dialog.Portal>

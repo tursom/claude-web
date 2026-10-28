@@ -80,9 +80,20 @@ export function allMessages(state: SessionState): Message[] {
     state.events.filter((e) => e.type === 'status' && e.activeMessageId).map((e) => e.activeMessageId),
   );
   const cancelled = new Set(state.events.flatMap((e) => e.cancelledMessageIds ?? []));
+  const queuedById = new Map(
+    state.events
+      .filter((e) => e.type === 'event' && e.message?.type === 'user')
+      .map((e) => [e.message!.uuid, e.message!]),
+  );
   return [
     ...state.history,
-    ...state.events.filter((e) => e.type === 'event' && e.message).map((e) => e.message!),
+    ...state.events.flatMap((e) => {
+      if (e.type === 'status' && e.activeMessageId) {
+        const message = queuedById.get(e.activeMessageId);
+        return message ? [{ ...message, queued: false }] : [];
+      }
+      return e.type === 'event' && e.message && !started.has(e.message.uuid) ? [e.message] : [];
+    }),
   ]
     .filter((m) => !m.cancelled && !cancelled.has(m.uuid))
     .map((m) => (started.has(m.uuid) ? { ...m, queued: false } : m));

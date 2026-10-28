@@ -98,7 +98,9 @@ function connected() {
 async function finish(value: UsageManager, message = report()) {
   await flush();
   const pending = value.refresh('rate_limit');
-  fakes.at(-1)!.emit(message);
+  await flush();
+  const fake = fakes.at(-1);
+  if (fake && !fake.close.mock.calls.length) fake.emit(message);
   await pending;
 }
 
@@ -203,7 +205,7 @@ describe('UsageManager probe', () => {
   });
 
   it.each(['initialization', 'stream', 'account'] as const)(
-    'times out a hung %s at 20 seconds and permits another probe',
+    'times out a hung %s at 20 seconds and permits another probe after backoff',
     async (stage) => {
       configure = (fake) => {
         if (stage === 'initialization') fake.initializationResult.mockReturnValue(new Promise(() => {}));
@@ -223,6 +225,9 @@ describe('UsageManager probe', () => {
       expect(latest()).toMatchObject({ refreshing: false, usage: { error: 'failed', fetchedAt: null } });
       expect(fakes[0].close).toHaveBeenCalledOnce();
       configure = () => {};
+      await value.refresh();
+      expect(fakes).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(60_000);
       const next = value.refresh();
       await flush();
       expect(fakes).toHaveLength(2);
@@ -236,12 +241,13 @@ describe('UsageManager probe', () => {
     const { value, latest } = connected();
     await finish(value);
     const previous = latest().usage;
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     const pending = value.refresh();
     await flush();
     await vi.advanceTimersByTimeAsync(20_000);
     await pending;
     expect(latest().usage).toEqual({ ...previous, error: 'failed' });
+    await vi.advanceTimersByTimeAsync(60_000);
     const next = value.refresh();
     await flush();
     fakes.at(-1)!.emit(report({ limits: [], extra_usage: null }));
@@ -254,34 +260,36 @@ describe('UsageManager probe', () => {
     });
   });
 
-  it.each(['missing report', 'null rate_limits'])(
-    'treats %s as a successful unavailable fetch and clears obsolete rows',
+  it.each(['missing report', 'null rate_limits', 'null rows'])(
+    'preserves the last good snapshot and backs off on %s (including CLI-masked fetch failures)',
     async (kind) => {
       const { value, latest } = connected();
       await finish(value);
-      await vi.advanceTimersByTimeAsync(10_000);
+      const previous = latest().usage;
+      await vi.advanceTimersByTimeAsync(60_000);
       const pending = value.refresh();
       await flush();
-      fakes.at(-1)!.emit(kind === 'missing report' ? result : report(null));
+      fakes
+        .at(-1)!
+        .emit(kind === 'missing report' ? result : report(kind === 'null rows' ? { limits: null } : null));
       await pending;
-      expect(latest()).toMatchObject({
-        refreshing: false,
-        usage: {
-          limits: null,
-          extraUsage: null,
-          fetchedAt: Date.now(),
-          error: 'unavailable',
-          account: { subscriptionType: 'test' },
-        },
-      });
+      expect(latest()).toMatchObject({ refreshing: false, usage: { ...previous, error: 'failed' } });
       expect(fakes.at(-1)!.received.map((message) => message.message.content)).toEqual(['/usage']);
+      await value.refresh('rate_limit');
+      await flush();
+      expect(fakes).toHaveLength(2);
     },
   );
 
-  it('preserves null rows in an available rate_limits object', async () => {
+  it('reports unavailable without pretending a null-row response is fresh', async () => {
     const { value, latest } = connected();
     await finish(value, report({ limits: null }));
-    expect(latest().usage).toMatchObject({ limits: null, extraUsage: null, error: null });
+    expect(latest().usage).toMatchObject({
+      limits: null,
+      extraUsage: null,
+      error: 'unavailable',
+      fetchedAt: null,
+    });
   });
 
   it.each(['query throws', 'initialization rejects', 'account rejects', 'stream ends', 'command error'])(
@@ -335,6 +343,7 @@ describe('UsageManager probe', () => {
     await pending;
     expect(latest().usage.error).toBe('failed');
     configure = (fake) => fake.accountInfo.mockResolvedValue({ apiKeySource: 'apiKeyHelper' });
+    await vi.advanceTimersByTimeAsync(60_000);
     const next = value.refresh('rate_limit');
     await flush();
     fakes[1].emit(report());
@@ -344,6 +353,61 @@ describe('UsageManager probe', () => {
 });
 
 describe('UsageManager refresh scheduling', () => {
+  it('backs off every trigger for 1/2/4/8/15 minutes, caps failures and resets after success', async () => {
+    const { value, latest } = connected();
+    await finish(value);
+    const previous = latest().usage;
+    await vi.advanceTimersByTimeAsync(120_000);
+    for (const minutes of [1, 2, 4, 8, 15, 15]) {
+      const pending = value.refresh();
+      await flush();
+      // The CLI may hide an HTTP 429 inside a successful command with null rows.
+      fakes.at(-1)!.emit(report({ limits: null }));
+      await pending;
+      expect(latest().usage).toEqual({ ...previous, error: 'failed' });
+      const count = fakes.length;
+      await vi.advanceTimersByTimeAsync(minutes * 60_000 - 1);
+      await Promise.all([value.refresh(), value.refresh('result'), value.refresh('rate_limit')]);
+      const leave = value.connect(() => {});
+      await flush();
+      leave();
+      expect(fakes).toHaveLength(count);
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    const recovered = value.refresh('result');
+    await flush();
+    fakes.at(-1)!.emit(report({ limits: [], extra_usage: null }));
+    await recovered;
+    expect(latest().usage).toMatchObject({ limits: [], error: null, fetchedAt: Date.now() });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const failed = value.refresh('rate_limit');
+    await flush();
+    fakes.at(-1)!.output.close();
+    await failed;
+    const count = fakes.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    await finish(value);
+    expect(fakes).toHaveLength(count + 1);
+    expect(latest().usage.error).toBeNull();
+  });
+
+  it('does not retry an initial failure on each reconnect or result', async () => {
+    const { value } = connected();
+    await flush();
+    const pending = value.refresh();
+    fakes[0].output.close();
+    await pending;
+    for (let i = 0; i < 5; i++) {
+      const leave = value.connect(() => {});
+      value.observe(result);
+      value.observe(event(i % 2 ? 'allowed' : 'rejected'));
+      await value.refresh();
+      await flush();
+      leave();
+    }
+    expect(fakes).toHaveLength(1);
+  });
+
   it('does nothing without WS connections and never polls, even when a connected cache gets old', async () => {
     const value = manager();
     await value.refresh();
@@ -362,13 +426,15 @@ describe('UsageManager refresh scheduling', () => {
     expect(fakes).toHaveLength(1);
   });
 
-  it('throttles manual requests for 10 seconds from the last attempt, including failures', async () => {
+  it('shares the 60-second minimum across manual refreshes, results, rate changes and reconnects', async () => {
     const { value } = connected();
-    await flush();
-    fakes[0].output.close();
-    await value.refresh('rate_limit');
-    await vi.advanceTimersByTimeAsync(9_999);
+    await finish(value);
+    await vi.advanceTimersByTimeAsync(59_999);
     await value.refresh();
+    value.observe(result);
+    value.observe(event('rejected'));
+    value.connect(() => {});
+    await flush();
     expect(fakes).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     const pending = value.refresh();
@@ -425,7 +491,7 @@ describe('UsageManager refresh scheduling', () => {
     await pending;
     expect(listener.mock.calls.at(-1)![0].usage.limits).toEqual(rows);
     leaveSecond();
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     await value.refresh();
     expect(fakes).toHaveLength(1);
     const leaveLast = value.connect(listener);
@@ -445,13 +511,13 @@ describe('UsageManager refresh scheduling', () => {
 });
 
 describe('UsageManager rate limits and shutdown', () => {
-  it('refreshes immediately only on status changes and converts seconds to milliseconds without fabricating rows', async () => {
+  it('updates limit status immediately but throttles its probes and never fabricates report rows', async () => {
     const { value, latest } = connected();
     await finish(value);
     const resetsAt = Date.now() / 1000 + 60;
     value.observe(event('rejected', { resetsAt, utilization: 1.2, errorCode: 'credits_required' }));
     await flush();
-    expect(fakes).toHaveLength(2);
+    expect(fakes).toHaveLength(1);
     expect(latest().usage).toMatchObject({
       limited: { resetsAt: resetsAt * 1000, errorCode: 'credits_required' },
       limits: rows,
@@ -460,15 +526,16 @@ describe('UsageManager rate limits and shutdown', () => {
     expect(latest().usage.limited).toEqual({ resetsAt: resetsAt * 1000, errorCode: 'credits_required' });
     value.observe(event('rejected', { resetsAt, utilization: 1.3, errorCode: 'credits_required' }));
     await flush();
-    expect(fakes).toHaveLength(2);
+    expect(fakes).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(60_000);
     value.observe(event('allowed_warning'));
     await flush();
     expect(latest().usage.limited).toBeNull();
-    expect(fakes).toHaveLength(3);
+    expect(fakes).toHaveLength(2);
     await finish(value);
     value.observe(event('allowed'));
     await flush();
-    expect(fakes).toHaveLength(4);
+    expect(fakes).toHaveLength(2);
     await finish(value);
   });
 
@@ -519,7 +586,7 @@ describe('UsageManager rate limits and shutdown', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(frames).toHaveLength(count + 1);
     expect(latest()).toMatchObject({ refreshing: false, usage: { limited: null } });
-    expect(fakes).toHaveLength(2);
+    expect(fakes).toHaveLength(1);
   });
 
   it.each(['initialization', 'stream', 'account'] as const)(

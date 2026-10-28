@@ -28,6 +28,7 @@ export interface ErrorFrame {
   type: 'error';
   sessionId?: string;
   requestId?: string;
+  terminalId?: string;
   code: string;
   message: string;
   seconds?: number;
@@ -56,6 +57,7 @@ export interface RuntimeOptions {
   onCatalog?: (models: Model[], commands: Command[]) => void;
   onClose?: (runtime: Runtime) => void;
 }
+const COMPACT_LEAD_MS = 5 * 60_000;
 
 export class Runtime {
   readonly sessionId: string;
@@ -93,13 +95,25 @@ export class Runtime {
   private processExit?: Promise<void>;
   private models: Model[] = [];
   private commands: Command[] = [];
+  private autoCompactNeeded = false;
+  private liveCacheObserved = false;
+  private compacting = false;
+  private turnIsCompaction = false;
+  private finishingTurn = false;
+  private autoCompactId?: string;
+  private quotaLimitedUntil = 0;
+  private readonly cachedResponses = new Set<string>();
 
   constructor(private readonly options: RuntimeOptions) {
     this.sessionId = options.sessionId;
     this.cwd = options.cwd;
     this.history = options.history ?? [];
     this.lastModified = options.lastModified ?? Date.now();
-    this.meta = { ...closedMeta(this.history, this.lastModified), permissionMode: options.mode };
+    this.meta = { ...closedMeta(this.history), permissionMode: options.mode };
+    for (const message of this.history) {
+      const responseId = message.type === 'assistant' ? (message.message?.id ?? message.uuid) : undefined;
+      if (typeof responseId === 'string') this.cachedResponses.add(responseId);
+    }
     this.ready = this.start();
   }
 
@@ -220,13 +234,51 @@ export class Runtime {
             message.type === 'result' && this.interrupted ? { ...message, interrupted: true } : message,
         });
         this.lastModified = Date.now();
-        const cache = cacheMeta(message, this.meta.cache);
-        if (cache) this.updateMeta({ cache });
+        const responseId = message.type === 'assistant' ? (message.message.id ?? message.uuid) : undefined;
+        const replay = (message as Message).isReplay || (message as Message).is_replay;
+        if (replay && typeof responseId === 'string') this.cachedResponses.add(responseId);
+        const cache =
+          typeof responseId === 'string' && !this.cachedResponses.has(responseId)
+            ? cacheMeta(message, this.meta.cache)
+            : this.meta.cache;
+        if (cache && cache !== this.meta.cache && typeof responseId === 'string')
+          this.cachedResponses.add(responseId);
+        if (cache && cache !== this.meta.cache && !this.compacting && !this.turnIsCompaction) {
+          this.liveCacheObserved = true;
+          this.autoCompactNeeded = true;
+          this.updateMeta({ cache });
+        }
+        if (message.type === 'rate_limit_event') {
+          const info = message.rate_limit_info;
+          if (info?.status === 'rejected') {
+            this.quotaLimitedUntil =
+              typeof info.resetsAt === 'number' && Number.isFinite(info.resetsAt)
+                ? info.resetsAt * 1000
+                : Infinity;
+          } else if (info?.status === 'allowed' || info?.status === 'allowed_warning')
+            this.quotaLimitedUntil = 0;
+        }
+        if (message.type === 'system' && message.subtype === 'status' && message.status === 'compacting') {
+          this.compacting = true;
+          this.autoCompactNeeded = false;
+        }
+        if (message.type === 'system' && message.subtype === 'compact_boundary') {
+          this.autoCompactNeeded = false;
+          this.liveCacheObserved = false;
+          this.updateMeta({ cache: undefined });
+        }
+        if (message.type === 'system' && message.subtype === 'status' && message.status === null) {
+          this.compacting = false;
+        }
         if (message.type === 'system' && message.subtype === 'commands_changed') {
           this.commands = message.commands;
           this.options.onCatalog?.(this.models, this.commands);
         }
         if (message.type === 'result') {
+          this.finishingTurn = true;
+          this.compacting = false;
+          this.turnIsCompaction = false;
+          this.autoCompactId = undefined;
           this.interrupted = false;
           this.active = false;
           this.setStatus(this.approvals.size ? 'waiting' : this.queued.length ? 'running' : 'idle');
@@ -243,6 +295,7 @@ export class Runtime {
           } catch {
             /* Older CLIs may not implement context usage. */
           }
+          this.finishingTurn = false;
           this.dispatch();
         }
       }
@@ -268,6 +321,10 @@ export class Runtime {
   async send(text: string, images: any[] = [], requestId?: string): Promise<void> {
     await this.ready;
     this.ensureOpen();
+    this.enqueue(text, images, requestId);
+  }
+
+  private enqueue(text: string, images: any[] = [], requestId?: string): void {
     const message: SDKUserMessage = {
       type: 'user',
       uuid: (requestId ?? randomUUID()) as SDKUserMessage['uuid'],
@@ -279,7 +336,7 @@ export class Runtime {
       },
     };
     this.queued.push(message);
-    if (this.active || this.approvals.size)
+    if (this.active || this.approvals.size || this.finishingTurn)
       this.queuedEvents.set(
         message.uuid!,
         this.record({ type: 'event', message: { ...message, queued: true } }),
@@ -287,10 +344,57 @@ export class Runtime {
     this.dispatch();
   }
 
+  /** Only a cache observed in this live Runtime may schedule background work. */
+  hasPendingCacheCompaction(now = Date.now()): boolean {
+    const cache = this.meta.cache;
+    return (
+      this.options.config.autoCompactBeforeExpiry !== false &&
+      !this.stopping &&
+      this.autoCompactNeeded &&
+      this.liveCacheObserved &&
+      this.commands.some((command) => command.name.replace(/^\//, '') === 'compact') &&
+      !!cache &&
+      cache.ttlSec * 1000 > COMPACT_LEAD_MS &&
+      cache.refreshedAt <= now &&
+      cache.refreshedAt + cache.ttlSec * 1000 > now &&
+      now >= this.quotaLimitedUntil
+    );
+  }
+
+  async compactBeforeExpiry(now = Date.now()): Promise<boolean> {
+    await this.ready;
+    now = Math.max(now, Date.now());
+    if (
+      !this.hasPendingCacheCompaction(now) ||
+      this.status !== 'idle' ||
+      this.active ||
+      this.finishingTurn ||
+      this.compacting ||
+      this.queued.length ||
+      this.approvals.size
+    )
+      return false;
+    const cache = this.meta.cache!;
+    if (cache.refreshedAt + cache.ttlSec * 1000 - now > COMPACT_LEAD_MS) return false;
+    // Clear before enqueueing, so failure/interruption cannot cause an automatic retry.
+    this.autoCompactNeeded = false;
+    this.autoCompactId = randomUUID();
+    this.enqueue('/compact', [], this.autoCompactId);
+    return true;
+  }
+
   private dispatch(): void {
-    if (this.active || this.stopping || this.approvals.size) return;
+    if (this.active || this.stopping || this.approvals.size || this.finishingTurn) return;
     const message = this.queued.shift();
     if (!message) return;
+    const text = message.message.content;
+    this.turnIsCompaction = typeof text === 'string' && /^\/compact(?:\s|$)/.test(text.trim());
+    const clears = typeof text === 'string' && /^\/clear(?:\s|$)/.test(text.trim());
+    if (this.turnIsCompaction || clears) this.autoCompactNeeded = false;
+    if (clears) {
+      this.liveCacheObserved = false;
+      this.updateMeta({ cache: undefined });
+    }
     this.active = true;
     this.outgoing.add(message.uuid!);
     this.lastModified = Date.now();
@@ -300,7 +404,12 @@ export class Runtime {
       queued.message!.queued = false;
       this.queuedEvents.delete(message.uuid!);
       this.record({ type: 'status', status: this.status, activeMessageId: message.uuid });
-    } else this.record({ type: 'event', message });
+    } else
+      this.record({
+        type: 'event',
+        message:
+          message.uuid === this.autoCompactId ? { ...message, autoCompactBeforeExpiry: true } : message,
+      });
     this.input.push(message);
   }
 
@@ -348,6 +457,18 @@ export class Runtime {
     }
   }
 
+  cancelQueuedMessage(messageId: string): void {
+    this.ensureOpen();
+    const index = this.queued.findIndex((message) => message.uuid === messageId);
+    if (index < 0) throw new SessionError('MESSAGE_NOT_QUEUED', '消息已开始执行或已移出队列，无法取消排队。');
+    this.queued.splice(index, 1);
+    const event = this.queuedEvents.get(messageId);
+    if (event) event.message!.cancelled = true;
+    this.queuedEvents.delete(messageId);
+    if (!this.active && !this.approvals.size && !this.queued.length) this.setStatus('idle');
+    this.record({ type: 'status', status: this.status, cancelledMessageIds: [messageId] });
+  }
+
   private cancelQueued(): void {
     const cancelledMessageIds = this.queued.map((message) => message.uuid!);
     for (const id of cancelledMessageIds) {
@@ -380,14 +501,20 @@ export class Runtime {
     await this.ready;
     this.ensureOpen();
     await this.query.applyFlagSettings({ model });
-    this.updateMeta({ model });
+    this.autoCompactNeeded = false;
+    this.liveCacheObserved = false;
+    this.updateMeta({ model, cache: undefined });
   }
 
   async setEffort(effort: Effort): Promise<void> {
     await this.ready;
     this.ensureOpen();
     await this.query.applyFlagSettings({ effortLevel: effort });
-    this.updateMeta({ effort });
+    // Cache behavior across effort changes differs by model. Wait for a fresh
+    // response rather than scheduling an expensive request from an old estimate.
+    this.autoCompactNeeded = false;
+    this.liveCacheObserved = false;
+    this.updateMeta({ effort, cache: undefined });
   }
 
   snapshot(): Snapshot {

@@ -1,0 +1,65 @@
+.cw-message-queue {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  margin-bottom: 8px;
+  min-width: 0;
+  font-size: var(--fs-sm);
+}
+.cw-queue-title {
+  padding: 8px 12px 4px;
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+}
+.cw-message-queue ol {
+  list-style: none;
+  margin: 0;
+  padding: 0 12px 8px;
+  max-height: min(200px, 25dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.cw-message-queue li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding-top: 6px;
+}
+.cw-queue-content {
+  flex: 1;
+  min-width: 0;
+}
+.cw-queue-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 90px;
+  overflow: auto;
+}
+.cw-message-queue button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 4px 6px;
+  color: var(--fg-2);
+  border-radius: var(--r);
+}
+.cw-message-queue button:hover {
+  background: var(--surface-2);
+}
+.cw-message-queue button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.cw-queue-images {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.cw-queue-images img {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: var(--r);
+}

@@ -1,0 +1,59 @@
+.cw-install-button {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 16px);
+  margin: 4px 8px 8px;
+  padding: 10px 8px;
+  border: 0;
+  border-radius: var(--r);
+  color: var(--fg-2);
+  background: transparent;
+  text-align: left;
+}
+.cw-install-button:hover {
+  background: var(--surface-3);
+}
+.cw-install-dialog {
+  position: fixed;
+  z-index: 210;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(440px, calc(100vw - 24px));
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  background: var(--surface);
+  box-shadow: var(--elev-overlay);
+  line-height: 1.6;
+}
+.cw-install-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.cw-install-head h2 {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.cw-install-dialog p {
+  margin: 12px 0 0;
+}
+.cw-install-dialog ol {
+  list-style: decimal;
+  padding-left: 20px;
+  margin-top: 16px;
+}
+.cw-install-dialog li + li {
+  margin-top: 8px;
+}
+.cw-install-note {
+  color: var(--fg-3);
+}

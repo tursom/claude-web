@@ -1,0 +1,219 @@
+.cc-prose ul {
+  list-style: disc;
+}
+.cc-prose ol {
+  list-style: decimal;
+}
+.cc-prose li > :is(ul, ol) {
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+.cc-prose :is(ul, ol) + p {
+  margin-top: 10px;
+}
+.cc-prose ul.contains-task-list {
+  list-style: none;
+  padding-left: 0;
+}
+.cc-prose .task-list-item input {
+  margin-right: 8px;
+  accent-color: var(--accent);
+}
+.cc-prose del {
+  text-decoration: line-through;
+}
+.cw-markdown-table {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.cw-markdown-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-chat);
+}
+.cw-markdown-table :is(th, td) {
+  min-width: 100px;
+  padding: 8px 12px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.cw-markdown-table :is(th, td):last-child {
+  border-right: 0;
+}
+.cw-markdown-table tr:last-child td {
+  border-bottom: 0;
+}
+.cw-markdown-table th {
+  background: var(--surface-2);
+  font-weight: 600;
+  text-align: start;
+}
+.cw-markdown-table tr:nth-child(even) td {
+  background: var(--surface);
+}
+.cc-prose .footnotes {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  font-size: var(--fs-xs);
+}
+.cw-markdown-file {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.cw-markdown-modes {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  flex-shrink: 0;
+}
+.cw-markdown-file > .cw-markdown-modes {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.cw-markdown-modes button,
+.cw-diagram-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  background: transparent;
+  color: var(--fg-2);
+  font-size: var(--fs-xs);
+}
+.cw-markdown-modes button[aria-pressed='true'] {
+  border-color: var(--line);
+  background: var(--bg);
+  color: var(--fg);
+}
+.cw-markdown-modes button:hover,
+.cw-diagram-icon:hover {
+  background: var(--surface-3);
+}
+.cw-markdown-rendered,
+.cw-markdown-source {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.cw-markdown-rendered {
+  padding: 16px;
+}
+.cw-markdown-source > .cc-code {
+  border: 0;
+  margin: 0;
+  border-radius: 0;
+}
+.cw-markdown-note {
+  margin: 0;
+  padding: 12px;
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-sm);
+}
+.cw-file-markdown {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.cw-mermaid {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--bg);
+}
+.cw-mermaid-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+.cw-mermaid-label {
+  font: var(--fs-xs)/var(--lh-sm) var(--ff-mono);
+  color: var(--fg-3);
+}
+.cw-diagram-icon {
+  margin-left: auto;
+  padding: 4px 8px;
+}
+.cw-mermaid-canvas {
+  min-width: 0;
+  overflow: auto;
+  padding: 16px;
+  max-height: 480px;
+}
+.cw-mermaid-svg {
+  min-width: 0;
+}
+.cw-mermaid-svg > svg {
+  display: block;
+  margin: auto;
+  height: auto;
+  max-width: 100%;
+}
+.cw-mermaid > .cc-code {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+.cw-mermaid-error {
+  padding: 0 12px 12px;
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+}
+.cw-mermaid-error pre {
+  overflow: auto;
+  max-height: 140px;
+  white-space: pre-wrap;
+}
+.cw-diagram-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+  background: rgb(0 0 0 / 40%);
+}
+.cw-diagram-dialog {
+  position: fixed;
+  inset: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+  z-index: 221;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--elev-overlay);
+  overflow: hidden;
+}
+.cw-diagram-dialog .cw-mermaid-toolbar {
+  min-height: 44px;
+}
+.cw-diagram-dialog h2 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.cw-diagram-dialog > .cw-mermaid-canvas {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
