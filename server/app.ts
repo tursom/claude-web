@@ -13,6 +13,7 @@ import { SessionManager } from './session-manager.js';
 import { registerWorkspace } from './routes/workspace.js';
 import { registerWs } from './ws.js';
 import { UsageManager } from './usage.js';
+import { UsageAuditLog } from './usage-audit.js';
 import { TerminalManager } from './terminal-manager.js';
 import { registerTerminals } from './routes/terminals.js';
 
@@ -36,9 +37,11 @@ export async function buildApp(
   await paths.init();
   const uploads = new UploadStore();
   const manager = options.manager ?? new SessionManager(config, paths, uploads);
-  const usage = options.usage ?? new UsageManager(config);
+  const audit = new UsageAuditLog(config.usageAudit);
+  const usage = options.usage ?? new UsageManager(config, audit);
   const terminals = options.terminals ?? new TerminalManager(config, paths);
   manager.attachUsage?.(usage);
+  manager.attachAudit?.(audit);
   registerAuth(app, config);
   await app.register(websocket, { options: { maxPayload: 8 * 1024 * 1024 } });
   await app.register(multipart, { limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 0 } });
@@ -136,6 +139,7 @@ export async function buildApp(
     await terminals.close();
     await usage.close();
     await manager.close();
+    await audit.close();
     await uploads.close();
   });
   return app;

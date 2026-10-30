@@ -3,6 +3,7 @@ import type { Query, SDKRateLimitInfo, SDKUsageReport, SDKUserMessage } from '@a
 import { emptyUsage, type Message, type Usage } from '../shared/protocol.js';
 import type { Config } from './config.js';
 import { agentSdk, assertSubscriptionAuth, InputQueue, sdkEnvironment } from './sdk.js';
+import type { UsageAuditLog } from './usage-audit.js';
 
 export interface UsageFrame {
   type: 'usage';
@@ -10,11 +11,11 @@ export interface UsageFrame {
   refreshing: boolean;
 }
 type Listener = (frame: UsageFrame) => void;
-type Reason = 'manual' | 'result' | 'rate_limit';
+type Reason = 'manual' | 'result' | 'rate_limit' | 'connect' | 'audit';
 const MIN_INTERVAL = 60_000;
 const MAX_BACKOFF = 15 * 60_000;
 
-/** Account-wide cache. Connections and Runtime events drive refreshes; no polling. */
+/** Account-wide cache, with optional background snapshots for the audit log. */
 export class UsageManager {
   private usage = emptyUsage();
   private readonly listeners = new Set<Listener>();
@@ -25,9 +26,21 @@ export class UsageManager {
   private retryAt = 0;
   private rateLimitStatus?: SDKRateLimitInfo['status'];
   private resetTimer?: ReturnType<typeof setTimeout>;
+  private auditTimer?: ReturnType<typeof setInterval>;
   private closed = false;
 
-  constructor(private readonly config: Config) {}
+  constructor(
+    private readonly config: Config,
+    private readonly audit?: UsageAuditLog,
+  ) {
+    if (config.usageAudit?.enabled) {
+      this.auditTimer = setInterval(
+        () => void this.startRefresh('audit'),
+        config.usageAudit.quotaIntervalMinutes * 60_000,
+      );
+      this.auditTimer.unref();
+    }
+  }
 
   isLimited(now = Date.now()): boolean {
     const limited = this.usage.limited;
@@ -40,17 +53,17 @@ export class UsageManager {
     const registered: Listener = (frame) => listener(frame);
     this.listeners.add(registered);
     this.send(registered);
-    if (this.stale(5 * 60_000)) void this.startRefresh();
+    if (this.stale(5 * 60_000)) void this.startRefresh('connect');
     return () => {
       this.listeners.delete(registered);
     };
   }
 
   refresh(reason: Reason = 'manual'): Promise<void> {
-    if (this.closed || !this.listeners.size) return Promise.resolve();
+    if (this.closed || (reason !== 'audit' && !this.listeners.size)) return Promise.resolve();
     if (this.inflight) return this.inflight;
     if (reason === 'result' && !this.stale(2 * 60_000)) return Promise.resolve();
-    return this.startRefresh();
+    return this.startRefresh(reason);
   }
 
   observe(message: Message): void {
@@ -86,6 +99,7 @@ export class UsageManager {
   async close(): Promise<void> {
     this.closed = true;
     clearTimeout(this.resetTimer);
+    clearInterval(this.auditTimer);
     this.cancelProbe?.();
     await this.inflight;
     this.listeners.clear();
@@ -108,8 +122,8 @@ export class UsageManager {
     for (const listener of this.listeners) this.send(listener);
   }
 
-  private startRefresh(): Promise<void> {
-    if (this.closed || !this.listeners.size) return Promise.resolve();
+  private startRefresh(reason: Reason): Promise<void> {
+    if (this.closed || (reason !== 'audit' && !this.listeners.size)) return Promise.resolve();
     if (this.inflight) return this.inflight;
     const now = Date.now();
     // All entry points, including reconnects and rate-limit changes, share this gate.
@@ -118,7 +132,7 @@ export class UsageManager {
     this.lastAttempt = now;
     // Install inflight before notifying listeners (which may request a refresh).
     const task = Promise.resolve()
-      .then(() => this.probe())
+      .then(() => this.probe(reason))
       .finally(() => {
         this.inflight = undefined;
         this.broadcast();
@@ -128,8 +142,8 @@ export class UsageManager {
     return task;
   }
 
-  private async probe(): Promise<void> {
-    if (this.closed || !this.listeners.size) return;
+  private async probe(reason: Reason): Promise<void> {
+    if (this.closed || (reason !== 'audit' && !this.listeners.size)) return;
     const input = new InputQueue<SDKUserMessage>();
     const controller = new AbortController();
     this.cancelProbe = () => controller.abort();
@@ -140,6 +154,7 @@ export class UsageManager {
     });
     const timeout = setTimeout(() => controller.abort(), 20_000);
     let q: Query | undefined;
+    let limits: Usage['limits'] = null;
     const read = async () => {
       q = agentSdk.query({
         prompt: input,
@@ -199,6 +214,7 @@ export class UsageManager {
       const update = await Promise.race([read(), stopped]);
       if (!this.closed) {
         if (Array.isArray(update.limits)) {
+          limits = update.limits;
           this.failures = 0;
           this.retryAt = 0;
           this.usage = {
@@ -227,6 +243,18 @@ export class UsageManager {
       }
       controller.abort();
       this.cancelProbe = undefined;
+      try {
+        this.audit?.record({
+          v: 1,
+          ts: new Date().toISOString(),
+          kind: 'quota',
+          reason,
+          ok: limits !== null,
+          limits,
+        });
+      } catch {
+        /* Audit failures must not affect the usage cache or refresh lifecycle. */
+      }
     }
   }
 

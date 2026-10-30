@@ -22,6 +22,14 @@ const schema = z
     maxLiveSessions: z.number().int().min(1).max(32).default(4),
     idleCloseMinutes: z.number().positive().default(30),
     autoCompactBeforeExpiry: z.boolean().optional(),
+    usageAudit: z
+      .object({
+        enabled: z.boolean().default(false),
+        dir: z.string().startsWith('/').optional(),
+        quotaIntervalMinutes: z.number().int().min(5).max(60).default(10),
+        retentionDays: z.number().int().min(1).max(365).default(30),
+      })
+      .optional(),
     terminal: z
       .object({
         shell: z.string().startsWith('/').optional(),

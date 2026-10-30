@@ -203,7 +203,11 @@ const q = query({
   - 任一会话产生 `result` 后，数据超过 2 分钟就刷新
   - 收到 `rate_limit_event` 且 `status` 变化时，立即更新提醒；探针仍受统一间隔和退避限制
   - 前端发 `usage.refresh`（打开额度浮层、点刷新按钮），同样遵守统一间隔和退避
-- 没有任何 WS 连接时不刷新，也不定时轮询。
+- 未开启审计时，没有任何 WS 连接就不刷新，也不定时轮询。开启 `usageAudit.enabled` 后，以 `quotaIntervalMinutes`（缺省 10，5–60 分钟）定时刷新，只有 `audit` 原因可绕过 WS 连接条件；仍共用最短间隔、并发合并和失败退避。定时器 unref，关闭时清除并取消在途探针。
+
+额度审计由 `UsageAuditLog` 按服务器本地日串行追加 JSONL，缺省目录 `~/.local/state/claude-web/usage-audit`，可配置绝对路径 `dir`；目录权限 0700、文件 0600，启动时删除早于 `retentionDays`（缺省 30，1–365 天）的日期文件。省略 `usageAudit` 或 `enabled: false` 时无磁盘操作。`record()` 同步返回，写盘链后台处理，失败仅 stderr 一次警告；Runtime 所有审计接入额外捕获异常，保证不影响消费循环。关闭时先停止探针和 Runtime，再等待审计写盘完成。
+
+仅记录 `runtime` 生命周期、`turn` 用量、`rate_limit` SDK 信息、`quota` 探针结果。探针记录五种原因（manual/result/rate_limit/connect/audit），失败写 `ok:false, limits:null`，不包含 account。每个 Runtime 的 `TurnUsageTracker` 在实际派发时区分 user/command/autoCompact；assistant 按响应 ID 保留最后一份 usage，忽略 synthetic/replay，按 main/subagent 和模型汇总。result 保存 SDK 累计用量及相对上次结果的差额；首个 result 可能带恢复历史，差额为 null，计数重置也记 null。上下文容量等非累计字段保留原值。审计不读取凭据，不记录账号邮箱、提示词、回复或工具内容，也不产生模型请求。
 
 `usage` 的结构：
 

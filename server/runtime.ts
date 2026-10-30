@@ -14,6 +14,7 @@ import type {
   WireEvent,
 } from '../shared/protocol.js';
 import type { Config } from './config.js';
+import { TurnUsageTracker, type UsageAuditLog } from './usage-audit.js';
 import {
   agentSdk,
   assertSubscriptionAuth,
@@ -50,6 +51,7 @@ export interface RuntimeOptions {
   cwd: string;
   mode: Mode;
   config: Config;
+  audit?: UsageAuditLog;
   resume?: boolean;
   history?: Message[];
   lastModified?: number;
@@ -103,10 +105,12 @@ export class Runtime {
   private autoCompactId?: string;
   private quotaLimitedUntil = 0;
   private readonly cachedResponses = new Set<string>();
+  private readonly tracker: TurnUsageTracker;
 
   constructor(private readonly options: RuntimeOptions) {
     this.sessionId = options.sessionId;
     this.cwd = options.cwd;
+    this.tracker = new TurnUsageTracker({ sessionId: this.sessionId, epoch: this.epoch });
     this.history = options.history ?? [];
     this.lastModified = options.lastModified ?? Date.now();
     this.meta = { ...closedMeta(this.history), permissionMode: options.mode };
@@ -171,6 +175,7 @@ export class Runtime {
       this.models = init.models ?? [];
       this.commands = init.commands ?? [];
       this.options.onCatalog?.(this.models, this.commands);
+      this.auditRuntime('start');
     } catch (error) {
       await this.close();
       throw error;
@@ -179,6 +184,30 @@ export class Runtime {
 
   private emit(event: WireEvent | ErrorFrame): void {
     this.options.onEvent?.(event);
+  }
+
+  private audit(action: (audit: UsageAuditLog) => void): void {
+    try {
+      if (this.options.audit?.enabled) action(this.options.audit);
+    } catch {
+      /* Diagnostics must never change session execution. */
+    }
+  }
+
+  private auditRuntime(event: 'start' | 'close'): void {
+    this.audit((audit) =>
+      audit.record({
+        v: 1,
+        ts: new Date().toISOString(),
+        kind: 'runtime',
+        event,
+        sessionId: this.sessionId,
+        cwd: this.cwd,
+        epoch: this.epoch,
+        resume: this.options.resume === true,
+        historyMessages: this.history.length,
+      }),
+    );
   }
 
   private record(event: Omit<WireEvent, 'sessionId'>): WireEvent {
@@ -217,6 +246,19 @@ export class Runtime {
           this.emit({ type: 'delta', sessionId: this.sessionId, epoch: this.epoch, event: message });
           continue;
         }
+        this.audit((audit) => {
+          this.tracker.observe(message);
+          if (message.type === 'rate_limit_event')
+            audit.record({
+              v: 1,
+              ts: new Date().toISOString(),
+              kind: 'rate_limit',
+              sessionId: this.sessionId,
+              info: message.rate_limit_info,
+            });
+          if (message.type === 'result')
+            audit.record(this.tracker.finish({ ...message, interrupted: this.interrupted }, this.meta));
+        });
         if (message.type === 'system' && message.subtype === 'init') {
           assertSubscriptionAuth(message.apiKeySource);
           this.updateMeta({
@@ -411,6 +453,22 @@ export class Runtime {
         message:
           message.uuid === this.autoCompactId ? { ...message, autoCompactBeforeExpiry: true } : message,
       });
+    this.audit(() => {
+      const content =
+        typeof text === 'string'
+          ? text
+          : text
+              .filter((block) => block.type === 'text')
+              .map((block) => ('text' in block ? block.text : ''))
+              .join('\n');
+      this.tracker.start(
+        message.uuid === this.autoCompactId
+          ? 'autoCompact'
+          : content.trimStart().startsWith('/')
+            ? 'command'
+            : 'user',
+      );
+    });
     this.input.push(message);
   }
 
@@ -568,6 +626,7 @@ export class Runtime {
         clearTimeout(fallback);
       }
       this.setStatus('closed');
+      this.auditRuntime('close');
       this.options.onClose?.(this);
     })();
     return this.finishTask;

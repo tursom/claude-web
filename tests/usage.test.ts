@@ -2,6 +2,7 @@ import type { Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-age
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Config } from '../server/config.js';
 import { agentSdk, InputQueue } from '../server/sdk.js';
+import type { UsageAuditLog } from '../server/usage-audit.js';
 import { UsageManager, type UsageFrame } from '../server/usage.js';
 
 type QueryArgs = Parameters<typeof agentSdk.query>[0];
@@ -84,13 +85,13 @@ let fakes: FakeQuery[];
 let managers: UsageManager[];
 let configure: (fake: FakeQuery) => void;
 const flush = () => vi.advanceTimersByTimeAsync(0);
-function manager() {
-  const value = new UsageManager(config);
+function manager(settings: Config = config, audit?: UsageAuditLog) {
+  const value = new UsageManager(settings, audit);
   managers.push(value);
   return value;
 }
-function connected() {
-  const value = manager();
+function connected(audit?: UsageAuditLog) {
+  const value = manager(config, audit);
   const frames: UsageFrame[] = [];
   const disconnect = value.connect((frame) => frames.push(frame));
   return { value, frames, disconnect, latest: () => frames.at(-1)! };
@@ -103,6 +104,16 @@ async function finish(value: UsageManager, message = report()) {
   if (fake && !fake.close.mock.calls.length) fake.emit(message);
   await pending;
 }
+
+function auditLog() {
+  const record = vi.fn<UsageAuditLog['record']>();
+  return { audit: { record } as unknown as UsageAuditLog, record };
+}
+
+const auditConfig: Config = {
+  ...config,
+  usageAudit: { enabled: true, quotaIntervalMinutes: 5, retentionDays: 30 },
+};
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -507,6 +518,217 @@ describe('UsageManager refresh scheduling', () => {
       refreshing: false,
       usage: { fetchedAt: Date.now(), error: null },
     });
+  });
+});
+
+describe('UsageManager audit', () => {
+  it('records each actual probe with its reason and only the current report, without account data', async () => {
+    const { audit, record } = auditLog();
+    const { value } = connected(audit);
+    await finish(value);
+    expect(record).toHaveBeenLastCalledWith({
+      v: 1,
+      ts: new Date().toISOString(),
+      kind: 'quota',
+      reason: 'connect',
+      ok: true,
+      limits: rows,
+    });
+    await value.refresh();
+    expect(record).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    const manual = value.refresh();
+    expect(value.refresh('rate_limit')).toBe(manual);
+    await flush();
+    fakes.at(-1)!.emit(report({ limits: [], extra_usage: null }));
+    await manual;
+    expect(record).toHaveBeenLastCalledWith({
+      v: 1,
+      ts: new Date().toISOString(),
+      kind: 'quota',
+      reason: 'manual',
+      ok: true,
+      limits: [],
+    });
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    value.observe(result);
+    await finish(value);
+    expect(record).toHaveBeenLastCalledWith(expect.objectContaining({ reason: 'result', ok: true }));
+    await vi.advanceTimersByTimeAsync(60_000);
+    value.observe(event('allowed_warning'));
+    await finish(value);
+    expect(record).toHaveBeenLastCalledWith(expect.objectContaining({ reason: 'rate_limit', ok: true }));
+    expect(record).toHaveBeenCalledTimes(4);
+    for (const [entry] of record.mock.calls) {
+      expect(Object.keys(entry).sort()).toEqual(['kind', 'limits', 'ok', 'reason', 'ts', 'v']);
+      expect(entry.ts).toBe(new Date(entry.ts).toISOString());
+    }
+    expect(JSON.stringify(record.mock.calls)).not.toMatch(/account|email|subscriptionType|test@example/);
+  });
+
+  it.each(['null rows', 'query throws', 'stream ends', 'command error', 'timeout'])(
+    'records %s as a failed probe without reusing cached limits',
+    async (kind) => {
+      const { audit, record } = auditLog();
+      const { value, latest } = connected(audit);
+      await finish(value);
+      await vi.advanceTimersByTimeAsync(60_000);
+      if (kind === 'query throws')
+        vi.mocked(agentSdk.query).mockImplementation(() => {
+          throw new Error('private@example.invalid');
+        });
+      const pending = value.refresh();
+      await flush();
+      if (kind === 'null rows') fakes.at(-1)!.emit(report({ limits: null }));
+      if (kind === 'stream ends') fakes.at(-1)!.output.close();
+      if (kind === 'command error')
+        fakes.at(-1)!.emit({ ...result, subtype: 'error_during_execution', is_error: true });
+      if (kind === 'timeout') await vi.advanceTimersByTimeAsync(20_000);
+      await pending;
+      expect(latest().usage).toMatchObject({ limits: rows, error: 'failed' });
+      expect(record).toHaveBeenCalledTimes(2);
+      expect(record).toHaveBeenLastCalledWith({
+        v: 1,
+        ts: new Date().toISOString(),
+        kind: 'quota',
+        reason: 'manual',
+        ok: false,
+        limits: null,
+      });
+      expect(JSON.stringify(record.mock.calls)).not.toContain('private@example.invalid');
+    },
+  );
+
+  it('isolates a throwing audit sink from successful and failed refreshes', async () => {
+    const { audit, record } = auditLog();
+    record.mockImplementation(() => {
+      throw new Error('Audit unavailable');
+    });
+    const { value, latest } = connected(audit);
+    await finish(value);
+    expect(latest()).toMatchObject({ refreshing: false, usage: { limits: rows, error: null } });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await finish(value, report({ limits: null }));
+    expect(latest()).toMatchObject({ refreshing: false, usage: { limits: rows, error: 'failed' } });
+    expect(record).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([undefined, false])('does not schedule snapshots when enabled is %s', async (enabled) => {
+    const { audit, record } = auditLog();
+    manager(
+      enabled === undefined
+        ? config
+        : { ...auditConfig, usageAudit: { ...auditConfig.usageAudit!, enabled } },
+      audit,
+    );
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+    expect(fakes).toHaveLength(0);
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it('takes configured snapshots without listeners, unreferences its timer and clears it on close', async () => {
+    const interval = vi.spyOn(globalThis, 'setInterval');
+    const { audit, record } = auditLog();
+    const value = manager(auditConfig, audit);
+    expect(interval).toHaveBeenCalledWith(expect.any(Function), 5 * 60_000);
+    expect(interval.mock.results[0].value.hasRef()).toBe(false);
+    await value.refresh();
+    value.observe(result);
+    value.observe(event('allowed_warning'));
+    await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
+    expect(fakes).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fakes).toHaveLength(1);
+    expect(fakes[0].received.map((message) => message.message.content)).toEqual(['/usage']);
+    fakes[0].emit(report());
+    await flush();
+    expect(record).toHaveBeenLastCalledWith({
+      v: 1,
+      ts: new Date().toISOString(),
+      kind: 'quota',
+      reason: 'audit',
+      ok: true,
+      limits: rows,
+    });
+    await value.close();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(fakes).toHaveLength(1);
+    expect(record).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the minimum interval for audit snapshots after a connection probe', async () => {
+    const { audit, record } = auditLog();
+    const value = manager(auditConfig, audit);
+    configure = (fake) => fake.emit(report());
+    await vi.advanceTimersByTimeAsync(4 * 60_000 + 1);
+    const disconnect = value.connect(() => {});
+    await flush();
+    disconnect();
+    expect(record).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(fakes).toHaveLength(1);
+    expect(record).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(fakes).toHaveLength(2);
+    expect(record).toHaveBeenLastCalledWith(expect.objectContaining({ reason: 'audit', ok: true }));
+  });
+
+  it('retains failure backoff for scheduled snapshots without listeners', async () => {
+    const { audit, record } = auditLog();
+    manager(auditConfig, audit);
+    configure = (fake) => fake.emit(report({ limits: null }));
+    for (const count of [1, 2, 3, 4, 4, 5, 5, 5, 6]) {
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(fakes).toHaveLength(count);
+      expect(record).toHaveBeenCalledTimes(count);
+    }
+    expect(record).toHaveBeenLastCalledWith(
+      expect.objectContaining({ reason: 'audit', ok: false, limits: null }),
+    );
+  });
+
+  it.each(['initialization', 'stream', 'account'] as const)(
+    'records a failed snapshot when close cancels %s and ignores late completion',
+    async (stage) => {
+      const { audit, record } = auditLog();
+      const held = deferred<any>();
+      configure = (fake) => {
+        if (stage === 'initialization') fake.initializationResult.mockReturnValue(held.promise);
+        if (stage === 'account') fake.accountInfo.mockReturnValue(held.promise);
+      };
+      const value = manager(auditConfig, audit);
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      if (stage === 'account') {
+        fakes[0].emit(report());
+        await flush();
+      }
+      await value.close();
+      expect(record).toHaveBeenCalledExactlyOnceWith({
+        v: 1,
+        ts: new Date().toISOString(),
+        kind: 'quota',
+        reason: 'audit',
+        ok: false,
+        limits: null,
+      });
+      expect(vi.getTimerCount()).toBe(0);
+      held.resolve({ account: { apiKeySource: 'none' }, email: 'late@example.invalid' });
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(fakes).toHaveLength(1);
+    },
+  );
+
+  it('does not record a probe skipped before it starts', async () => {
+    const { audit, record } = auditLog();
+    const { value } = connected(audit);
+    await value.close();
+    expect(fakes).toHaveLength(0);
+    expect(record).not.toHaveBeenCalled();
   });
 });
 

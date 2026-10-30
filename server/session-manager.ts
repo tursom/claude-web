@@ -6,6 +6,7 @@ import type { UploadStore } from './uploads.js';
 import { Runtime, type Listener } from './runtime.js';
 import { agentSdk, closedMeta, SessionError } from './sdk.js';
 import type { UsageManager } from './usage.js';
+import type { UsageAuditLog } from './usage-audit.js';
 import { CommandCatalog } from './command-catalog.js';
 import { readSavedSessionUsage } from './saved-session-usage.js';
 import { sessionUsageFromMessages, type SessionUsageResponse } from '../shared/session-usage.js';
@@ -22,6 +23,7 @@ export class SessionManager {
   private closing = false;
   private closeTask?: Promise<void>;
   private usage?: UsageManager;
+  private audit?: UsageAuditLog;
   private readonly catalog: CommandCatalog;
 
   constructor(
@@ -37,6 +39,10 @@ export class SessionManager {
   }
   attachUsage(usage: UsageManager): void {
     this.usage = usage;
+  }
+
+  attachAudit(audit: UsageAuditLog): void {
+    this.audit = audit;
   }
 
   private ensureOpen(): void {
@@ -97,6 +103,7 @@ export class SessionManager {
       cwd: session.cwd,
       mode,
       config: this.config,
+      audit: this.audit,
       resume,
       history,
       lastModified: session.lastModified,
