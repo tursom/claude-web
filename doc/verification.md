@@ -70,6 +70,12 @@ Runtime 的实际 spawn/释放流程也单独实测：两个 Query 并发初始�
 
 运行部署验收时，在已有配置中开启 `usageAudit.enabled`，重启 Claude Web 后正常使用并观察当天 JSONL。关闭网页后等待配置采样间隔，确认仍有 `reason:audit` 的 quota；故障退避期间间隔可能增加。检查四类记录、日志权限及保留期。不需要发送额外模型或压缩请求。本次自动验证未执行真实模型请求，未重启线上服务；持续一天的真实采样留待开启审计后观察。
 
+## 额度对照报告验证
+
+临时 JSONL fixture 覆盖 web-only / vscode-only / mixed / idle 区间、加权计算、两种额度窗口的核心比值、至少 5 个区间和 5 个百分点的样本门槛、跨 reset 不连区间、下降/重置不参与推断、边界半开、转录去重及 synthetic/replay 过滤、TTL 缺失回退、隐藏调用、压缩回访与冷启动。包含实际 tracker 生成记录的整合验证及 CLI 文本/JSON 输出；测试输入输出中不含会话正文。
+
+报告专项 13 项、全量 22 个测试文件 272 项、`npm run check` 均通过；`npm run build` 通过，仅有已有的大 chunk 提示。相关缓存设置浏览器测试 12 项通过。验证只使用本地文件与 SDK 模拟，没有执行模型请求或更改线上部署。报告真实核心结论须等待积累足够独占区间后再判断。
+
 ## 历史缓存虚假续期修复
 
 实测会话 `7ce2ec9c-df53-41c7-9ce6-ffeec38c00ad` 的最后普通主回复时间为 2026-10-27 14:29（Asia/Shanghai），15:20 压缩后仍保留部分旧 assistant；15:57 关闭进程写入 cost-state 更新了 JSONL mtime。原 closedMeta 把这个 mtime 当成缓存时间，错误显示新的一小时有效期。

@@ -105,6 +105,22 @@ iPhone / iPad：用 Safari 打开本站，点「分享 → 添加到主屏幕 �
 - 启动目录经过 workspaceRoots 校验；终端使用服务用户的操作系统权限，workspaceRoots 并非 Shell 沙箱。Claude 权限模式只约束 Agent SDK，不约束手动 Shell 命令。子进程环境只传递明确允许的变量，不继承 PI WEB 连接信息或服务 API 密钥；用户 HOME 中的 Shell 配置仍正常生效。
 - 在终端执行 `claude --resume <id>` 前，仍需先释放网页中的同一 Claude 会话；从终端切回聊天前先退出终端内的 CLI。终端不会自动恢复、释放或抢占聊天 Runtime。
 
+## 额度对照报告
+
+开启审计并积累数据后，运行本地报告对照 Claude Web 与 VS Code / CLI 的用量。缺省分析最近 7 天，读取审计目录与 `~/.claude/projects/*/*.jsonl`，不发送网络或模型请求：
+
+```sh
+npm run report:usage
+npm run report:usage -- --since 2026-11-01 --until 2026-11-08 --json
+npm run report:usage -- --dir /absolute/path/to/audit --idle-close-minutes 60
+```
+
+`--since` / `--until` 接受 ISO 日期，区间为左闭右开；`--dir` 覆盖审计目录，`--json` 输出机器可读结果。`--idle-close-minutes` 应与部署配置一致（缺省 30），用于判断自动压缩后是否回来工作；`--projects-dir` 可覆盖 CLI 转录目录。
+
+报告列出 session / weekly_all 两种额度窗口的区间与客户端加权 token、每百万加权 token 的额度百分点及两客户端比值、隐藏调用最多的 10 轮、自动压缩回访和第一轮缓存写入超过 50k 的冷启动。每种客户端至少有 5 个独占区间且累计额度增长至少 5 个百分点时才给出比值，否则提示样本不足。SDK 累计结果缺少缓存 TTL 时按同轮可见用量分布估算，未知部分按 5 分钟缓存计算；首轮及计数重置回退可见用量。结果用于相对排查，不能当作订阅实际账单；跨区间运行、其他客户端隐藏调用和日志缺失都会影响归因。
+
+visible 依方案仅统计非流式 assistant 消息；当前 SDK 的流式块可能携带未定稿 usage，尤其输出 token 可能偏低。因此首轮回退值是已观察下界，「隐藏调用」差额也可能包含未定稿用量。尚未收到 result 就关闭或异常退出的轮次不计入逐轮报告。
+
 ## 验证命令
 
 ```sh

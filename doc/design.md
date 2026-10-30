@@ -209,6 +209,10 @@ const q = query({
 
 仅记录 `runtime` 生命周期、`turn` 用量、`rate_limit` SDK 信息、`quota` 探针结果。探针记录五种原因（manual/result/rate_limit/connect/audit），失败写 `ok:false, limits:null`，不包含 account。每个 Runtime 的 `TurnUsageTracker` 在实际派发时区分 user/command/autoCompact；assistant 按响应 ID 保留最后一份 usage，忽略 synthetic/replay，按 main/subagent 和模型汇总。result 保存 SDK 累计用量及相对上次结果的差额；首个 result 可能带恢复历史，差额为 null，计数重置也记 null。上下文容量等非累计字段保留原值。审计不读取凭据，不记录账号邮箱、提示词、回复或工具内容，也不产生模型请求。
 
+只读 `scripts/usage-audit-report.ts` 将审计用量与其他客户端转录按额度快照对齐：同 resets_at 的相邻快照形成 session / weekly_all 区间，按结果或 assistant 时间归属，用 resultDelta（缺失则 visible）计算相对 API 价格的加权 token。SDK 累计缓存写入没有 TTL，按 visible 分布估算，未知按 5m。额度下降和检测到累计重置的区间不参与核心推断；每客户端至少 5 个独占区间且累计增长 5 个百分点才输出消耗率与比值。另输出隐藏调用、压缩回访和 Runtime 首轮缓存重写；命令支持文本表格和 JSON，不读取凭据或发网络请求。
+
+visible 依方案只取非 stream_event 的 assistant 消息，当前 SDK 流式块的 usage 可能尚未定稿，导致首轮回退用量偏低，`resultDelta − visible` 也不能全部归因于隐藏调用。逐轮日志只在 result 写入；关闭/异常前未结算的轮次不计入。报告明确提示这两项覆盖限制，避免据此做确定的订阅计费结论。
+
 `usage` 的结构：
 
 ```ts

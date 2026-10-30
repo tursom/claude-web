@@ -15,6 +15,7 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "probe:sdk": "tsx scripts/probe-sdk.ts",
+    "report:usage": "tsx scripts/usage-audit-report.ts",
     "test:sdk": "tsx scripts/smoke-sdk.ts",
     "format": "prettier --write server shared web/src tests scripts *.ts *.json web/index.html web/public/manifest.webmanifest"
   },
