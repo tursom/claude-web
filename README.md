@@ -119,3 +119,11 @@ node --import tsx scripts/probe-usage.ts --standalone
 `probe:sdk` 只检查本地 CLI 控制接口，不发送模型消息。`npm run test:sdk` 会使用当前用户订阅发送短消息，在临时目录检查两个并发会话、中断和恢复；它会产生正常的 CLI 历史记录并消耗少量订阅用量。
 
 浏览器测试用内存 API/WS fixture，覆盖 1280×800、1024×768、390×844、360×740 的明暗主题、无横向溢出、最小对话宽度和审批交互；截图保存在 `test-results/`。这类 fixture 用于界面验收，实际 SDK 的验证独立运行。详细结果及外部集成边界见 [doc/verification.md](doc/verification.md)。
+
+## 许可证
+
+本项目原创代码采用 [GNU Affero General Public License v3.0](LICENSE)（SPDX：`AGPL-3.0-only`，仅第 3 版）许可。
+
+你可以在遵守许可证的前提下使用、修改、分发和商用本项目。如果修改本项目并通过网络向用户提供交互服务，须按 AGPL 第 13 条向这些用户显著提供免费获取该修改版本对应源码的方式。分发本项目或其修改版本时，也须遵守许可证中保留声明、提供对应源码等适用要求。本项目不提供任何担保，具体以许可证全文为准。
+
+第三方依赖及随附的第三方代码仍适用各自的许可证和声明。Claude Agent SDK 与 Claude Code 的使用受 [Anthropic 相关条款](https://code.claude.com/docs/en/legal-and-compliance)约束，本项目的 AGPL 许可不替代这些条款。本项目是独立项目，与 Anthropic 无官方隶属关系。
