@@ -99,7 +99,7 @@ const q = query({
 | `idle` | 进程活着，等待输入 | 收到 `result` 消息 |
 
 - 向 `closed` 会话发消息时自动建 Runtime（带 `resume`）。
-- `idle` 持续 `idleCloseMinutes`（默认 30）且没有客户端订阅时，关闭 Runtime；存在有效缓存且有待执行的到期前压缩时暂缓回收（见 4.5）。`waiting` 不超时：后台任务可能要等你回来审批。
+- `idle` 持续 `idleCloseMinutes`（默认 30）且没有客户端订阅时，关闭 Runtime；没有订阅者时不安排到期前自动压缩，也不因此暂缓回收（见 4.5）。`waiting` 不超时：后台任务可能要等你回来审批。
 - 同时活跃的 Runtime 最多 `maxLiveSessions` 个（默认 4），超出时拒绝新建并提示先释放。
 - 服务重启后所有 Runtime 消失，待审批请求作废；会话本身仍可从 JSONL 恢复。
 
@@ -112,11 +112,11 @@ Claude Code 不对会话文件加锁，两个进程同时写同一会话会把�
 
 ### 4.5 缓存到期前自动压缩
 
-`autoCompactBeforeExpiry` 有效默认值为 true。输入区缓存浮层提供全局开关；生产启动将配置路径交给设置接口，PATCH 串行读取最新配置、只更新该布尔字段并以同目录临时文件原子替换，保存成功后才更改共享 Config，重启后沿用。关闭只禁止后续自动触发，不中断已运行的命令。
+`autoCompactBeforeExpiry` 有效默认值为 false，只有显式设为 true 才启用。输入区缓存浮层提供全局开关；生产启动将配置路径交给设置接口，PATCH 串行读取最新配置、只更新该布尔字段并以同目录临时文件原子替换，保存成功后才更改共享 Config，重启后沿用。已有配置显式开启的部署继续沿用其值。关闭只禁止后续自动触发，不中断已运行的命令。
 
-复用 SessionManager 的 30 秒维护周期和会话锁，无网页定时器。Runtime 在真实主会话非压缩回复报告缓存用量时记录缓存与待压缩内容；synthetic、零用量、子代理、历史元信息不重新安排。缓存原 TTL 大于 5 分钟、剩余时间为 (0, 5 分钟]、CLI 提供 compact、Runtime 空闲且无排队/审批/回合收尾、无已知限额时，发送普通 SDK `/compact` 命令。触发前清除待压缩标记，失败与中断不重试；后续新工作才重新置位。手动压缩、CLI 自动压缩以及 clear 也清除计划；压缩边界清除旧缓存显示。模型/思考切换后等待新的缓存响应。
+复用 SessionManager 的 30 秒维护周期和会话锁，无网页定时器。Runtime 在真实主会话非压缩回复报告缓存用量时记录缓存与待压缩内容；synthetic、零用量、子代理、历史元信息不重新安排。至少一个浏览器订阅该会话（`subscribers > 0`）、缓存原 TTL 大于 5 分钟、剩余时间为 (0, 5 分钟]、CLI 提供 compact、Runtime 空闲且无排队/审批/回合收尾、无已知限额时，发送普通 SDK `/compact` 命令。触发前清除待压缩标记，失败与中断不重试；后续新工作才重新置位。手动压缩、CLI 自动压缩以及 clear 也清除计划；压缩边界清除旧缓存显示。模型/思考切换后等待新的缓存响应。
 
-离线但待压缩的 Runtime 暂缓空闲回收；关闭开关、缓存过期、额度不足或尝试完成后恢复原回收规则。服务重启/主动释放后不自行恢复旧会话，避免与终端争用历史文件。缓存时间是客户端估计，压缩自身有用量成本；不保证零成本或每次都命中缓存。自动发送的本地事件携带 `autoCompactBeforeExpiry`，存活 Runtime 的压缩卡显示「缓存到期前自动」；CLI 历史仍保留原生命令记录。
+无浏览器订阅的 Runtime 不安排自动压缩，SessionManager 在空闲达到 `idleCloseMinutes` 后正常回收，缓存自然过期；断开浏览器不会中断已经开始的命令。服务重启/主动释放后不自行恢复旧会话，避免与终端争用历史文件。缓存时间是客户端估计，压缩自身有用量成本；不保证零成本或每次都命中缓存。自动发送的本地事件携带 `autoCompactBeforeExpiry`，存活 Runtime 的压缩卡显示「缓存到期前自动」；CLI 历史仍保留原生命令记录。
 
 ## 5. 实时通道与断线续传
 
@@ -260,7 +260,7 @@ type Usage = {
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/me` | 返回 `Remote-Email`、`Remote-Name`，前端显示用 |
-| GET | `/api/settings` | 返回全局 `autoCompactBeforeExpiry` 开关，有效缺省 true。 |
+| GET | `/api/settings` | 返回全局 `autoCompactBeforeExpiry` 开关，有效缺省 false。 |
 | PATCH | `/api/settings` | 仅接受布尔 `autoCompactBeforeExpiry`，沿用身份和 Origin 校验；保存后更新调度，失败保留旧设置。 |
 | GET | `/api/sessions?cwd=` | `listSessions({dir})` 合并 Runtime 状态；不带 `cwd` 时返回全部项目，按 `cwd` 分组 |
 | GET | `/api/sessions/:id/messages?offset=&limit=` | 历史消息，分页 |

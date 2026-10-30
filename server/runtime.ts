@@ -348,7 +348,8 @@ export class Runtime {
   hasPendingCacheCompaction(now = Date.now()): boolean {
     const cache = this.meta.cache;
     return (
-      this.options.config.autoCompactBeforeExpiry !== false &&
+      this.options.config.autoCompactBeforeExpiry === true &&
+      this.subscribers > 0 &&
       !this.stopping &&
       this.autoCompactNeeded &&
       this.liveCacheObserved &&

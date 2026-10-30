@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 const id = '11111111-1111-4111-8111-111111111111';
 async function setup(page: Page) {
   const state = {
-    enabled: true,
+    enabled: false,
     fail: false,
     readFail: false,
     patches: [] as boolean[],
@@ -72,7 +72,7 @@ async function setup(page: Page) {
 }
 
 for (const width of [1280, 360]) {
-  test(`cache compaction defaults on and restores saved toggles at ${width}px`, async ({
+  test(`cache compaction defaults off and restores saved toggles at ${width}px`, async ({
     page,
   }, testInfo) => {
     await page.setViewportSize({ width, height: 800 });
@@ -81,22 +81,22 @@ for (const width of [1280, 360]) {
     await page.getByRole('button', { name: '缓存与自动压缩', exact: true }).click();
     const toggle = page.getByRole('switch', { name: '缓存到期前自动压缩' });
     await expect(toggle).toBeEnabled();
-    await expect(toggle).toBeChecked();
+    await expect(toggle).not.toBeChecked();
     expect(await toggle.evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(
       48,
     );
     await page.locator('.cc-cache-settings').screenshot({ path: testInfo.outputPath('cache-settings.png') });
     await toggle.click();
-    await expect(toggle).not.toBeChecked();
-    expect(state.patches).toEqual([false]);
+    await expect(toggle).toBeChecked();
+    expect(state.patches).toEqual([true]);
     await page.keyboard.press('Escape');
     await page.reload();
     await page.getByRole('button', { name: '缓存与自动压缩', exact: true }).click();
     await expect(toggle).toBeEnabled();
-    await expect(toggle).not.toBeChecked();
-    await toggle.click();
     await expect(toggle).toBeChecked();
-    expect(state.patches).toEqual([false, true]);
+    await toggle.click();
+    await expect(toggle).not.toBeChecked();
+    expect(state.patches).toEqual([true, false]);
     expect(state.sent).not.toContain('send');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
@@ -124,6 +124,7 @@ test('closed sessions keep old cache times across reloads and unknown caches do 
 
 test('failed setting saves keep the enabled state and report the error', async ({ page }) => {
   const state = await setup(page);
+  state.enabled = true;
   state.fail = true;
   await page.goto(`/s/${id}`);
   await page.getByRole('button', { name: '缓存与自动压缩', exact: true }).click();
@@ -156,7 +157,7 @@ test('failed reads stop loading, keep the switch horizontal and recover with ret
   state.readFail = false;
   await panel.getByRole('button', { name: '重试', exact: true }).click();
   await expect(toggle).toBeEnabled();
-  await expect(toggle).toBeChecked();
+  await expect(toggle).not.toBeChecked();
   await expect(panel.getByRole('alert')).toHaveCount(0);
   expect(state.sent).not.toContain('send');
 });

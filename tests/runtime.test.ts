@@ -238,26 +238,84 @@ describe('SDK boundary', () => {
 
 describe('cache-expiry compaction', () => {
   beforeEach(() => {
+    config.autoCompactBeforeExpiry = true;
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
   });
   afterEach(() => vi.useRealTimers());
   const flush = () => vi.advanceTimersByTimeAsync(0);
-  async function warm(ttl = 3600) {
+  async function warm(ttl = 3600, subscribed = true) {
     const value = manager();
     const id = await value.create(directory, 'default');
+    const listener = vi.fn();
+    if (subscribed) await value.subscribe(id, listener);
     await value.send(id, 'work');
     fakes[0].emit(
       assistant(ttl === 3600 ? { ephemeral_1h_input_tokens: 100 } : { ephemeral_5m_input_tokens: 100 }),
     );
     fakes[0].emit({ type: 'result', subtype: 'success' });
     await flush();
-    return { value, id, runtime: value.get(id)!, started: Date.now(), fake: fakes[0] };
+    return {
+      value,
+      id,
+      runtime: value.get(id)!,
+      started: Date.now(),
+      fake: fakes[0],
+      disconnect: () => value.unsubscribe(id, listener),
+    };
   }
   const texts = (fake: FakeQuery) => fake.received.map((message) => message.message.content);
 
-  it('holds an offline session past idle reaping, compacts at 55 minutes once and reaps after completion', async () => {
-    const { value, id, runtime, fake } = await warm();
+  it.each([undefined, false])(
+    'does not compact a subscribed session when the setting is %s',
+    async (setting) => {
+      config.autoCompactBeforeExpiry = setting;
+      const { value, runtime, fake, started } = await warm();
+      vi.setSystemTime(started + 55 * 60_000);
+      await value.reapIdle();
+      expect(runtime.subscribers).toBe(1);
+      expect(runtime.hasPendingCacheCompaction()).toBe(false);
+      expect(texts(fake)).toEqual(['work']);
+    },
+  );
+
+  it.each([30, 60])(
+    'does not compact without subscribers and reaps after %i idle minutes',
+    async (minutes) => {
+      config.idleCloseMinutes = minutes;
+      const { value, id, runtime, fake } = await warm(3600, false);
+      expect(runtime.subscribers).toBe(0);
+      expect(runtime.hasPendingCacheCompaction()).toBe(false);
+      await vi.advanceTimersByTimeAsync(Math.min(minutes, 55) * 60_000 - 1);
+      expect(value.get(id)).toBe(runtime);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(texts(fake)).toEqual(['work']);
+      if (minutes > 55) {
+        expect(await runtime.compactBeforeExpiry()).toBe(false);
+        expect(value.get(id)).toBe(runtime);
+        await vi.advanceTimersByTimeAsync((minutes - 55) * 60_000);
+      }
+      expect(value.get(id)).toBeUndefined();
+      expect(fake.close).toHaveBeenCalledOnce();
+      expect(texts(fake)).toEqual(['work']);
+    },
+  );
+
+  it('cancels pending scheduling when the last browser disconnects before the deadline', async () => {
+    const { value, id, runtime, fake, started, disconnect } = await warm();
+    expect(runtime.hasPendingCacheCompaction()).toBe(true);
+    vi.setSystemTime(started + 55 * 60_000);
+    disconnect();
+    expect(runtime.subscribers).toBe(0);
+    expect(runtime.hasPendingCacheCompaction()).toBe(false);
+    await value.reapIdle();
+    expect(value.get(id)).toBeUndefined();
+    expect(texts(fake)).toEqual(['work']);
+  });
+
+  it('compacts a subscribed session at 55 minutes once and reaps after disconnection', async () => {
+    const { value, id, runtime, fake, disconnect } = await warm();
+    expect(runtime.subscribers).toBe(1);
     await vi.advanceTimersByTimeAsync(55 * 60_000 - 1);
     expect(value.get(id)).toBe(runtime);
     expect(texts(fake)).toEqual(['work']);
@@ -273,6 +331,7 @@ describe('cache-expiry compaction', () => {
     fake.emit({ type: 'result', subtype: 'success' });
     await flush();
     expect(runtime.meta.cache).toBeUndefined();
+    disconnect();
     await vi.advanceTimersByTimeAsync(31 * 60_000);
     expect(value.get(id)).toBeUndefined();
     expect(texts(fake)).toEqual(['work', '/compact']);
@@ -323,7 +382,7 @@ describe('cache-expiry compaction', () => {
   it.each(['disabled', 'expired', 'short TTL', 'quota rejected', 'compact unsupported'])(
     'does not send or retain an idle session when %s',
     async (reason) => {
-      const { value, id, started, fake } = await warm(reason === 'short TTL' ? 300 : 3600);
+      const { value, id, started, fake, disconnect } = await warm(reason === 'short TTL' ? 300 : 3600);
       if (reason === 'disabled') config.autoCompactBeforeExpiry = false;
       if (reason === 'quota rejected') {
         fake.emit({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } });
@@ -336,16 +395,21 @@ describe('cache-expiry compaction', () => {
       vi.setSystemTime(started + (reason === 'expired' ? 61 : 55) * 60_000);
       await value.reapIdle();
       expect(texts(fake)).toEqual(['work']);
+      disconnect();
+      await value.reapIdle();
       expect(value.get(id)).toBeUndefined();
     },
   );
 
   it('honors an account-wide limit observed from another session without probing usage', async () => {
-    const { value, id, fake, started } = await warm();
+    const { value, id, fake, started, disconnect } = await warm();
     const usage = new UsageManager(config);
     value.attachUsage(usage);
     usage.observe({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } });
     vi.setSystemTime(started + 55 * 60_000);
+    await value.reapIdle();
+    expect(texts(fake)).toEqual(['work']);
+    disconnect();
     await value.reapIdle();
     expect(value.get(id)).toBeUndefined();
     expect(fakes).toHaveLength(1);
@@ -355,6 +419,7 @@ describe('cache-expiry compaction', () => {
 
   it('does not act on restored cache metadata until this Runtime observes new cached model work', async () => {
     const value = runtime();
+    value.subscribers = 1;
     await value.ready;
     value.meta.cache = { refreshedAt: Date.now() - 55 * 60_000, ttlSec: 3600 };
     expect(value.hasPendingCacheCompaction()).toBe(false);
@@ -411,6 +476,7 @@ describe('cache-expiry compaction', () => {
       lastModified: Date.now(),
     });
     runtimes.push(value);
+    value.subscribers = 1;
     await value.ready;
     const original = value.meta.cache;
     fakes[0].emit({ ...old, timestamp: undefined });
@@ -423,6 +489,7 @@ describe('cache-expiry compaction', () => {
 
   it('does not schedule cold compaction for a delayed response with an expired recorded timestamp', async () => {
     const value = runtime();
+    value.subscribers = 1;
     await value.ready;
     fakes[0].emit({
       ...assistant({ ephemeral_1h_input_tokens: 1 }),

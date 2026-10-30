@@ -32,11 +32,11 @@ async function setup() {
 }
 
 describe('cache-compaction settings', () => {
-  it('defaults to enabled, persists toggles and preserves unrelated config edits across restart', async () => {
+  it('defaults to disabled, persists toggles and preserves unrelated config edits across restart', async () => {
     const { app, config, configPath } = await setup();
     try {
       expect((await app.inject({ url: '/api/settings', headers })).json()).toEqual({
-        autoCompactBeforeExpiry: true,
+        autoCompactBeforeExpiry: false,
       });
       const raw = JSON.parse(await readFile(configPath, 'utf8'));
       await writeFile(configPath, JSON.stringify({ ...raw, idleCloseMinutes: 45 }));
@@ -44,13 +44,13 @@ describe('cache-compaction settings', () => {
         method: 'PATCH',
         url: '/api/settings',
         headers,
-        payload: { autoCompactBeforeExpiry: false },
+        payload: { autoCompactBeforeExpiry: true },
       });
       expect(saved.statusCode).toBe(200);
-      expect(saved.json()).toEqual({ autoCompactBeforeExpiry: false });
-      expect(config.autoCompactBeforeExpiry).toBe(false);
+      expect(saved.json()).toEqual({ autoCompactBeforeExpiry: true });
+      expect(config.autoCompactBeforeExpiry).toBe(true);
       expect(JSON.parse(await readFile(configPath, 'utf8'))).toMatchObject({
-        autoCompactBeforeExpiry: false,
+        autoCompactBeforeExpiry: true,
         idleCloseMinutes: 45,
         futureField: { keep: true },
       });
@@ -60,7 +60,7 @@ describe('cache-compaction settings', () => {
     const restarted = await buildApp(await loadConfig(configPath), { manager, configPath });
     try {
       expect((await restarted.inject({ url: '/api/settings', headers })).json()).toEqual({
-        autoCompactBeforeExpiry: false,
+        autoCompactBeforeExpiry: true,
       });
     } finally {
       await restarted.close();

@@ -6,7 +6,7 @@
   "claudePath": "/usr/bin/claude",
   "maxLiveSessions": 4,
   "idleCloseMinutes": 30,
-  "autoCompactBeforeExpiry": true,
+  "autoCompactBeforeExpiry": false,
   "terminal": {
     "maxTerminals": 8,
     "maxPerProject": 4

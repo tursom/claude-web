@@ -58,7 +58,7 @@ export async function buildApp(
     name: request.headers['remote-name'],
     maxLiveSessions: config.maxLiveSessions,
   }));
-  const settings = () => ({ autoCompactBeforeExpiry: config.autoCompactBeforeExpiry ?? true });
+  const settings = () => ({ autoCompactBeforeExpiry: config.autoCompactBeforeExpiry ?? false });
   let settingsWrite: Promise<unknown> = Promise.resolve();
   app.get('/api/settings', async () => settings());
   app.patch('/api/settings', async (request) => {
