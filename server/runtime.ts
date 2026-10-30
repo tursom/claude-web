@@ -13,7 +13,7 @@ import type {
   Status,
   WireEvent,
 } from '../shared/protocol.js';
-import type { Config } from './config.js';
+import { autoCompactSetting, type Config } from './config.js';
 import { TurnUsageTracker, type UsageAuditLog } from './usage-audit.js';
 import {
   agentSdk,
@@ -390,7 +390,7 @@ export class Runtime {
   hasPendingCacheCompaction(now = Date.now()): boolean {
     const cache = this.meta.cache;
     return (
-      this.options.config.autoCompactBeforeExpiry === true &&
+      autoCompactSetting(this.options.config, this.sessionId) &&
       this.subscribers > 0 &&
       !this.stopping &&
       this.autoCompactNeeded &&

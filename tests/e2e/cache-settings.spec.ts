@@ -1,12 +1,15 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const id = '11111111-1111-4111-8111-111111111111';
+const otherId = '22222222-2222-4222-8222-222222222222';
 async function setup(page: Page) {
+  const sessionSettings = () => ({ enabled: false, fail: false, readFail: false, patches: [] as boolean[] });
   const state = {
-    enabled: false,
-    fail: false,
-    readFail: false,
-    patches: [] as boolean[],
+    settings: { [id]: sessionSettings(), [otherId]: sessionSettings() } as Record<
+      string,
+      ReturnType<typeof sessionSettings>
+    >,
+    holdSettings: undefined as { sessionId: string; method: string; wait: Promise<void> } | undefined,
     sent: [] as string[],
     cache: { refreshedAt: Date.now(), ttlSec: 3600 } as { refreshedAt: number; ttlSec: number } | undefined,
     status: 'idle',
@@ -15,30 +18,41 @@ async function setup(page: Page) {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     if (!pathname.startsWith('/api/')) return route.continue();
-    if (pathname === '/api/settings') {
+    const settingsId = /^\/api\/sessions\/([^/]+)\/settings$/.exec(pathname)?.[1];
+    if (settingsId) {
+      const settings = state.settings[settingsId];
+      if (!settings) return route.fulfill({ status: 404, json: { message: 'Not found' } });
+      let failure = false;
       if (request.method() === 'PATCH') {
-        state.patches.push(request.postDataJSON().autoCompactBeforeExpiry);
-        if (state.fail) return route.fulfill({ status: 500, json: { message: '设置保存失败' } });
-        state.enabled = request.postDataJSON().autoCompactBeforeExpiry;
+        settings.patches.push(request.postDataJSON().autoCompactBeforeExpiry);
+        failure = settings.fail;
+        if (!failure) settings.enabled = request.postDataJSON().autoCompactBeforeExpiry;
       }
-      if (request.method() === 'GET' && state.readFail)
-        return route.fulfill({ status: 404, json: { message: 'Not found' } });
-      return route.fulfill({ json: { autoCompactBeforeExpiry: state.enabled } });
+      const response = failure
+        ? { status: 500, json: { message: '设置保存失败' } }
+        : request.method() === 'GET' && settings.readFail
+          ? { status: 404, json: { message: 'Not found' } }
+          : { json: { autoCompactBeforeExpiry: settings.enabled } };
+      const hold = state.holdSettings;
+      if (hold?.sessionId === settingsId && hold.method === request.method()) {
+        state.holdSettings = undefined;
+        await hold.wait;
+      }
+      return route.fulfill(response);
     }
+    if (pathname === '/api/settings') throw new Error('Cache settings must use the session-scoped endpoint');
     return route.fulfill({
       json:
         pathname === '/api/me'
           ? { maxLiveSessions: 4 }
           : pathname === '/api/sessions'
-            ? [
-                {
-                  sessionId: id,
-                  cwd: '/project',
-                  status: state.status,
-                  summary: '缓存会话',
-                  lastModified: Date.now(),
-                },
-              ]
+            ? [id, otherId].map((sessionId, index) => ({
+                sessionId,
+                cwd: '/project',
+                status: state.status,
+                summary: index === 0 ? '缓存会话' : '另一个会话',
+                lastModified: Date.now() - index,
+              }))
             : pathname.endsWith('/usage')
               ? { usage: null, source: 'unavailable' }
               : pathname === '/api/fs/tree'
@@ -56,8 +70,8 @@ async function setup(page: Page) {
         ws.send(
           JSON.stringify({
             type: 'snapshot',
-            sessionId: id,
-            epoch: id,
+            sessionId: request.sessionId,
+            epoch: request.sessionId,
             seq: 0,
             status: state.status,
             history: [],
@@ -82,13 +96,15 @@ for (const width of [1280, 360]) {
     const toggle = page.getByRole('switch', { name: '缓存到期前自动压缩' });
     await expect(toggle).toBeEnabled();
     await expect(toggle).not.toBeChecked();
+    await expect(page.locator('.cc-cache-settings')).toContainText('此开关仅对当前会话生效');
+    await expect(page.locator('.cc-cache-settings')).toContainText('仅在浏览器连接此会话时执行');
     expect(await toggle.evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(
       48,
     );
     await page.locator('.cc-cache-settings').screenshot({ path: testInfo.outputPath('cache-settings.png') });
     await toggle.click();
     await expect(toggle).toBeChecked();
-    expect(state.patches).toEqual([true]);
+    expect(state.settings[id].patches).toEqual([true]);
     await page.keyboard.press('Escape');
     await page.reload();
     await page.getByRole('button', { name: '缓存与自动压缩', exact: true }).click();
@@ -96,7 +112,7 @@ for (const width of [1280, 360]) {
     await expect(toggle).toBeChecked();
     await toggle.click();
     await expect(toggle).not.toBeChecked();
-    expect(state.patches).toEqual([true, false]);
+    expect(state.settings[id].patches).toEqual([true, false]);
     expect(state.sent).not.toContain('send');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
@@ -124,8 +140,8 @@ test('closed sessions keep old cache times across reloads and unknown caches do 
 
 test('failed setting saves keep the enabled state and report the error', async ({ page }) => {
   const state = await setup(page);
-  state.enabled = true;
-  state.fail = true;
+  state.settings[id].enabled = true;
+  state.settings[id].fail = true;
   await page.goto(`/s/${id}`);
   await page.getByRole('button', { name: '缓存与自动压缩', exact: true }).click();
   const toggle = page.getByRole('switch', { name: '缓存到期前自动压缩' });
@@ -134,7 +150,7 @@ test('failed setting saves keep the enabled state and report the error', async (
   await toggle.click();
   await expect(page.getByText('操作失败：设置保存失败', { exact: true })).toBeVisible();
   await expect(toggle).toBeChecked();
-  expect(state.enabled).toBe(true);
+  expect(state.settings[id].enabled).toBe(true);
   expect(state.sent).not.toContain('send');
 });
 
@@ -143,7 +159,7 @@ test('failed reads stop loading, keep the switch horizontal and recover with ret
 }, testInfo) => {
   await page.setViewportSize({ width: 360, height: 800 });
   const state = await setup(page);
-  state.readFail = true;
+  state.settings[id].readFail = true;
   await page.goto(`/s/${id}`);
   await page.getByRole('button', { name: '缓存与自动压缩', exact: true }).click();
   const panel = page.locator('.cc-cache-settings');
@@ -154,10 +170,115 @@ test('failed reads stop loading, keep the switch horizontal and recover with ret
   await expect(panel).not.toContainText('加载中');
   expect(await toggle.evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(48);
   await panel.screenshot({ path: testInfo.outputPath('cache-settings-unavailable.png') });
-  state.readFail = false;
+  state.settings[id].readFail = false;
   await panel.getByRole('button', { name: '重试', exact: true }).click();
   await expect(toggle).toBeEnabled();
   await expect(toggle).not.toBeChecked();
   await expect(panel.getByRole('alert')).toHaveCount(0);
   expect(state.sent).not.toContain('send');
 });
+
+test('auto compaction settings stay independent when switching between two sessions', async ({ page }) => {
+  const state = await setup(page);
+  await page.goto(`/s/${id}`);
+  const cache = page.getByRole('button', { name: '缓存与自动压缩', exact: true });
+  const toggle = page.getByRole('switch', { name: '缓存到期前自动压缩' });
+  await cache.click();
+  await expect(toggle).toBeEnabled();
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  await page.keyboard.press('Escape');
+
+  await page.getByRole('button', { name: /另一个会话/ }).click();
+  await expect(page).toHaveURL(`/s/${otherId}`);
+  await cache.click();
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).not.toBeChecked();
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await page.keyboard.press('Escape');
+
+  await page.getByRole('button', { name: /缓存会话/ }).click();
+  await expect(page).toHaveURL(`/s/${id}`);
+  await cache.click();
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).toBeChecked();
+  expect(state.settings[id].patches).toEqual([true]);
+  expect(state.settings[otherId].patches).toEqual([true, false]);
+  expect(state.settings[id].enabled).toBe(true);
+  expect(state.settings[otherId].enabled).toBe(false);
+  expect(state.sent).not.toContain('send');
+});
+
+for (const method of ['GET', 'PATCH']) {
+  for (const fail of [false, true]) {
+    test(`late ${method} ${fail ? 'failure' : 'success'} does not affect the newly selected session`, async ({
+      page,
+    }) => {
+      // Let the old request finish even after cancellation so the result guards are exercised.
+      await page.addInitScript(() => {
+        const originalFetch = window.fetch;
+        window.fetch = (input, options) =>
+          originalFetch(
+            input,
+            String(input).endsWith('/settings') ? { ...options, signal: undefined } : options,
+          );
+      });
+      const state = await setup(page);
+      state.settings[id].enabled = method === 'GET';
+      state.settings[id].readFail = method === 'GET' && fail;
+      state.settings[id].fail = method === 'PATCH' && fail;
+      let release!: () => void;
+      const wait = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      if (method === 'GET') state.holdSettings = { sessionId: id, method, wait };
+      await page.goto(`/s/${id}`);
+      const cache = page.getByRole('button', { name: '缓存与自动压缩', exact: true });
+      const toggle = page.getByRole('switch', { name: '缓存到期前自动压缩' });
+      const oldRequest = page.waitForRequest(
+        (request) => request.url().endsWith(`/api/sessions/${id}/settings`) && request.method() === method,
+      );
+      await cache.click();
+      if (method === 'PATCH') {
+        await expect(toggle).toBeEnabled();
+        state.holdSettings = { sessionId: id, method, wait };
+        await toggle.click();
+        await expect(toggle).toContainText('保存中');
+      } else {
+        await expect(toggle).toContainText('加载中');
+      }
+      await oldRequest;
+      await page.keyboard.press('Escape');
+      await page.getByRole('button', { name: /另一个会话/ }).click();
+      await expect(page).toHaveURL(`/s/${otherId}`);
+      await cache.click();
+      await expect(toggle).toBeEnabled();
+      await expect(toggle).not.toBeChecked();
+
+      const finished = page.waitForEvent('requestfinished', {
+        predicate: (request) =>
+          request.url().endsWith(`/api/sessions/${id}/settings`) && request.method() === method,
+      });
+      release();
+      await finished;
+      // Allow the completed request's handlers and React updates to reach the next paint.
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+      );
+      await expect(toggle).toBeEnabled();
+      await expect(toggle).not.toBeChecked();
+      await expect(page.getByText('操作失败：设置保存失败', { exact: true })).toHaveCount(0);
+      await expect(page.locator('.cc-cache-settings').getByRole('alert')).toHaveCount(0);
+
+      await toggle.click();
+      await expect(toggle).toBeChecked();
+      expect(state.settings[otherId].patches).toEqual([true]);
+      expect(state.settings[id].patches).toEqual(method === 'PATCH' ? [true] : []);
+      expect(state.sent).not.toContain('send');
+    });
+  }
+}

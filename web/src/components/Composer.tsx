@@ -603,6 +603,7 @@ function SessionComposer({ session, meta, send, action, onError }: ComposerProps
               <SquareSlash size={16} strokeWidth={1.75} />
             </button>
             <CacheSettings
+              sessionId={session.sessionId}
               description={cacheTip}
               onError={onError}
               className={

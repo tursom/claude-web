@@ -22,6 +22,7 @@ const schema = z
     maxLiveSessions: z.number().int().min(1).max(32).default(4),
     idleCloseMinutes: z.number().positive().default(30),
     autoCompactBeforeExpiry: z.boolean().optional(),
+    sessionAutoCompactBeforeExpiry: z.record(z.uuid(), z.boolean()).optional(),
     usageAudit: z
       .object({
         enabled: z.boolean().default(false),
@@ -52,14 +53,32 @@ export async function loadConfig(path = process.env.CLAUDE_WEB_CONFIG ?? 'config
   return parseConfig(JSON.parse(await readFile(path, 'utf8')));
 }
 
-/** Called serially by the settings route; preserve unrelated and unknown config fields. */
-export async function saveAutoCompactSetting(path: string, enabled: boolean): Promise<void> {
+export function autoCompactSetting(config: Config, sessionId?: string): boolean {
+  return (
+    (sessionId ? config.sessionAutoCompactBeforeExpiry?.[sessionId] : undefined) ??
+    config.autoCompactBeforeExpiry ??
+    false
+  );
+}
+
+/** Called serially by the settings routes; preserve unrelated and unknown config fields. */
+export async function saveAutoCompactSetting(
+  path: string,
+  enabled: boolean,
+  sessionId?: string,
+): Promise<void> {
   const target = await realpath(path);
   const raw = JSON.parse(await readFile(target, 'utf8'));
   parseConfig(raw);
+  const updated = sessionId
+    ? {
+        ...raw,
+        sessionAutoCompactBeforeExpiry: { ...raw.sessionAutoCompactBeforeExpiry, [sessionId]: enabled },
+      }
+    : { ...raw, autoCompactBeforeExpiry: enabled };
   const temporary = `${target}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporary, `${JSON.stringify({ ...raw, autoCompactBeforeExpiry: enabled }, null, 2)}\n`, {
+    await writeFile(temporary, `${JSON.stringify(updated, null, 2)}\n`, {
       flag: 'wx',
       mode: 0o600,
     });

@@ -1,13 +1,15 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { api } from '../api/client';
 
 export function CacheSettings({
+  sessionId,
   children,
   description,
   className,
   onError,
 }: {
+  sessionId: string;
   children: ReactNode;
   description: string;
   className?: string;
@@ -18,12 +20,20 @@ export function CacheSettings({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [readVersion, setReadVersion] = useState(0);
+  const saveController = useRef<AbortController | null>(null);
+  const settingsPath = `/api/sessions/${encodeURIComponent(sessionId)}/settings`;
+  useEffect(() => {
+    setEnabled(undefined);
+    setSaving(false);
+    setError('');
+    return () => saveController.current?.abort();
+  }, [sessionId]);
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
     setEnabled(undefined);
     setError('');
-    void api<{ autoCompactBeforeExpiry: boolean }>('/api/settings', { signal: controller.signal })
+    void api<{ autoCompactBeforeExpiry: boolean }>(settingsPath, { signal: controller.signal })
       .then((settings) => {
         if (typeof settings.autoCompactBeforeExpiry !== 'boolean') throw new Error('Invalid settings');
         if (!controller.signal.aborted) setEnabled(settings.autoCompactBeforeExpiry);
@@ -32,21 +42,24 @@ export function CacheSettings({
         if (!controller.signal.aborted) setError('暂时无法加载设置。');
       });
     return () => controller.abort();
-  }, [open, readVersion]);
+  }, [open, readVersion, settingsPath]);
   const toggle = async () => {
     if (enabled === undefined || saving) return;
+    const controller = new AbortController();
+    saveController.current = controller;
     setSaving(true);
     try {
-      const settings = await api<{ autoCompactBeforeExpiry: boolean }>('/api/settings', {
+      const settings = await api<{ autoCompactBeforeExpiry: boolean }>(settingsPath, {
         method: 'PATCH',
         body: JSON.stringify({ autoCompactBeforeExpiry: !enabled }),
+        signal: controller.signal,
       });
       if (typeof settings.autoCompactBeforeExpiry !== 'boolean') throw new Error('设置保存失败');
-      setEnabled(settings.autoCompactBeforeExpiry);
+      if (!controller.signal.aborted) setEnabled(settings.autoCompactBeforeExpiry);
     } catch (error) {
-      onError(error instanceof Error ? error.message : '设置保存失败');
+      if (!controller.signal.aborted) onError(error instanceof Error ? error.message : '设置保存失败');
     } finally {
-      setSaving(false);
+      if (!controller.signal.aborted) setSaving(false);
     }
   };
   return (
@@ -95,7 +108,7 @@ export function CacheSettings({
             </strong>
           </button>
           <p>缓存过期前 5 分钟，趁会话空闲时整理上下文，减少下次继续对话的用量。</p>
-          <p>对所有会话生效，关掉页面也会执行。压缩本身也会消耗额度。</p>
+          <p>此开关仅对当前会话生效，仅在浏览器连接此会话时执行。压缩本身也会消耗额度。</p>
           {error && (
             <div className="cc-cache-error">
               <span role="alert">{error}</span>

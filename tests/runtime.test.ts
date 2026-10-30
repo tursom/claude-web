@@ -266,6 +266,46 @@ describe('cache-expiry compaction', () => {
   }
   const texts = (fake: FakeQuery) => fake.received.map((message) => message.message.content);
 
+  it.each([false, true])(
+    'applies session overrides independently of the %s global default',
+    async (enabled) => {
+      config.autoCompactBeforeExpiry = enabled;
+      const { value, id, runtime, fake, started } = await warm();
+      const second = await value.create(directory, 'default');
+      await value.subscribe(second, vi.fn());
+      await value.send(second, 'second work');
+      fakes[1].emit(assistant({ ephemeral_1h_input_tokens: 100 }));
+      fakes[1].emit({ type: 'result', subtype: 'success' });
+      await flush();
+      config.sessionAutoCompactBeforeExpiry = { [id]: !enabled };
+      vi.setSystemTime(started + 55 * 60_000);
+      await value.reapIdle();
+      await flush();
+      expect(texts(fake)).toEqual(enabled ? ['work'] : ['work', '/compact']);
+      expect(texts(fakes[1])).toEqual(enabled ? ['second work', '/compact'] : ['second work']);
+      config.sessionAutoCompactBeforeExpiry[id] = false;
+      expect(runtime.hasPendingCacheCompaction()).toBe(false);
+      expect(fake.interrupt).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves a session override after releasing and restarting its Runtime', async () => {
+    config.autoCompactBeforeExpiry = false;
+    const { value, id } = await warm();
+    config.sessionAutoCompactBeforeExpiry = { [id]: true };
+    await value.release(id);
+    await value.send(id, 'continue');
+    fakes[1].emit(assistant({ ephemeral_1h_input_tokens: 100 }));
+    fakes[1].emit({ type: 'result', subtype: 'success' });
+    await flush();
+    const runtime = value.get(id)!;
+    expect(runtime.hasPendingCacheCompaction()).toBe(true);
+    vi.setSystemTime(Date.now() + 55 * 60_000);
+    await value.reapIdle();
+    await flush();
+    expect(texts(fakes[1])).toEqual(['continue', '/compact']);
+  });
+
   it.each([undefined, false])(
     'does not compact a subscribed session when the setting is %s',
     async (setting) => {

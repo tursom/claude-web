@@ -21,7 +21,7 @@ npm start
 
 `config.json` 不入版本控制。`authMode: "proxy"` 将认证全部交给 Pangolin，应用不检查账号或邮箱，也不要求身份头。未设置 authMode 时兼容原有 ownerHeader 模式，要求 `owner` 等于 `Remote-Email`。`allowedOrigins` 必须是完整 origin（不含尾斜杠或路径），用于 WS 和写请求的来源校验。`claudePath` 使用 `command -v claude` 的绝对路径。默认同时保留 4 个 Runtime；无订阅者且空闲 30 分钟后回收，等待审批不会超时。没有浏览器订阅的空闲会话不安排自动压缩，按 `idleCloseMinutes` 正常回收，缓存自然过期。
 
-`autoCompactBeforeExpiry` 缺省为关闭。输入区点击缓存时钟，可切换「缓存到期前自动压缩」；这是全局设置，立即影响后续调度，并保存到服务启动使用的 `CLAUDE_WEB_CONFIG`（未设置时为 `config.json`）。仅在至少一个浏览器订阅该会话时触发。已有配置显式设为 `true` 的部署继续保持开启，可在界面自行关闭。服务用户须有配置目录写权限；保存失败不会更改运行时设置。写入仅更新该字段，保留其他配置内容。
+`autoCompactBeforeExpiry` 是尚未单独设置会话的默认值，缺省为关闭，已有显式设为 `true` 的部署继续沿用。输入区点击缓存时钟，可切换**当前会话**的「缓存到期前自动压缩」，不影响其他会话。设置按会话 ID 保存在服务启动使用的 `CLAUDE_WEB_CONFIG`（未设置时为 `config.json`）的 `sessionAutoCompactBeforeExpiry` 映射中，优先于默认值；刷新、释放进程后续接及服务重启后仍保留。仅在至少一个浏览器订阅该会话时触发。服务用户须有配置目录写权限；保存失败不会更改运行时设置。写入只更新目标设置，保留其他配置内容。
 
 可选 `usageAudit` 配置用于排查订阅额度消耗，省略时关闭；两个配置示例用 `"usageAudit": { "enabled": true }` 开启。日志缺省写入 `~/.local/state/claude-web/usage-audit/YYYY-MM-DD.jsonl`（服务器本地日期），可用绝对路径 `dir` 覆盖；`retentionDays` 缺省 30（范围 1–365）。目录权限 0700、文件 0600，启动时清理过期日志。记录 Runtime 生命周期、每轮分模型 token、累计结果差额和限额事件，不记录账号邮箱、凭据、提示词、回复或工具内容；写盘失败只警告一次，不影响会话。开启后每 `quotaIntervalMinutes` 分钟（缺省 10，范围 5–60）复用已有零 token `/usage` 探针记录额度，即使没打开网页也采样；仍遵守 60 秒最短间隔和失败退避，不新增模型请求。
 

@@ -5,7 +5,7 @@ import serveStatic from '@fastify/static';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { saveAutoCompactSetting, type Config } from './config.js';
+import { autoCompactSetting, saveAutoCompactSetting, type Config } from './config.js';
 import { Paths } from './paths.js';
 import { registerAuth } from './auth.js';
 import { UploadStore } from './uploads.js';
@@ -61,21 +61,29 @@ export async function buildApp(
     name: request.headers['remote-name'],
     maxLiveSessions: config.maxLiveSessions,
   }));
-  const settings = () => ({ autoCompactBeforeExpiry: config.autoCompactBeforeExpiry ?? false });
+  const settings = (sessionId?: string) => ({
+    autoCompactBeforeExpiry: autoCompactSetting(config, sessionId),
+  });
   let settingsWrite: Promise<unknown> = Promise.resolve();
-  app.get('/api/settings', async () => settings());
-  app.patch('/api/settings', async (request) => {
-    const input = z.object({ autoCompactBeforeExpiry: z.boolean() }).strict().parse(request.body);
+  const saveSettings = (enabled: boolean, sessionId?: string) => {
     const write = settingsWrite
       .catch(() => {})
       .then(async () => {
-        if (options.configPath)
-          await saveAutoCompactSetting(options.configPath, input.autoCompactBeforeExpiry);
-        config.autoCompactBeforeExpiry = input.autoCompactBeforeExpiry;
-        return settings();
+        if (options.configPath) await saveAutoCompactSetting(options.configPath, enabled, sessionId);
+        if (sessionId) {
+          config.sessionAutoCompactBeforeExpiry ??= {};
+          config.sessionAutoCompactBeforeExpiry[sessionId] = enabled;
+        } else config.autoCompactBeforeExpiry = enabled;
+        return settings(sessionId);
       });
     settingsWrite = write;
     return write;
+  };
+  const settingsInput = z.object({ autoCompactBeforeExpiry: z.boolean() }).strict();
+  app.get('/api/settings', async () => settings());
+  app.patch('/api/settings', async (request) => {
+    const input = settingsInput.parse(request.body);
+    return saveSettings(input.autoCompactBeforeExpiry);
   });
   app.get('/api/sessions', async (request) => manager.list((request.query as any).cwd));
   app.post('/api/sessions', async (request) => {
@@ -88,6 +96,17 @@ export async function buildApp(
     return { sessionId: await manager.create(input.cwd, input.permissionMode) };
   });
   const idOf = (request: { params: unknown }) => z.uuid().parse((request.params as any).id);
+  app.get('/api/sessions/:id/settings', async (request) => {
+    const id = idOf(request);
+    await manager.info(id);
+    return settings(id);
+  });
+  app.patch('/api/sessions/:id/settings', async (request) => {
+    const id = idOf(request);
+    const input = settingsInput.parse(request.body);
+    await manager.info(id);
+    return saveSettings(input.autoCompactBeforeExpiry, id);
+  });
   app.get('/api/sessions/:id/messages', async (request) => {
     const q = z
       .object({

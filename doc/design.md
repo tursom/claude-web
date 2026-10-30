@@ -112,7 +112,7 @@ Claude Code 不对会话文件加锁，两个进程同时写同一会话会把�
 
 ### 4.5 缓存到期前自动压缩
 
-`autoCompactBeforeExpiry` 有效默认值为 false，只有显式设为 true 才启用。输入区缓存浮层提供全局开关；生产启动将配置路径交给设置接口，PATCH 串行读取最新配置、只更新该布尔字段并以同目录临时文件原子替换，保存成功后才更改共享 Config，重启后沿用。已有配置显式开启的部署继续沿用其值。关闭只禁止后续自动触发，不中断已运行的命令。
+`autoCompactBeforeExpiry` 是未单独设置会话的默认值，有效缺省为 false，已有显式开启的部署继续沿用其值。输入区缓存浮层提供当前会话开关，经 `/api/sessions/:id/settings` 读取和保存，按会话 UUID 记入配置中的 `sessionAutoCompactBeforeExpiry` 布尔映射，覆盖全局默认值；设置不启动或恢复 Runtime，不发送 SDK 命令。两个接口均先验证会话存在及工作区访问权限。所有设置 PATCH 共用串行写入链，读取最新配置后仅更新目标字段并以同目录临时文件原子替换，保存成功才更新共享 Config。Runtime 调度时实时读取该会话的有效值，其他会话不受影响；刷新、释放/续接和重启均沿用。关闭只禁止后续自动触发，不中断已运行的命令。旧 `/api/settings` 保留用于读取和修改默认值，已显式设置的会话不随默认值改变。
 
 复用 SessionManager 的 30 秒维护周期和会话锁，无网页定时器。Runtime 在真实主会话非压缩回复报告缓存用量时记录缓存与待压缩内容；synthetic、零用量、子代理、历史元信息不重新安排。至少一个浏览器订阅该会话（`subscribers > 0`）、缓存原 TTL 大于 5 分钟、剩余时间为 (0, 5 分钟]、CLI 提供 compact、Runtime 空闲且无排队/审批/回合收尾、无已知限额时，发送普通 SDK `/compact` 命令。触发前清除待压缩标记，失败与中断不重试；后续新工作才重新置位。手动压缩、CLI 自动压缩以及 clear 也清除计划；压缩边界清除旧缓存显示。模型/思考切换后等待新的缓存响应。
 
@@ -268,8 +268,10 @@ type Usage = {
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/me` | 返回 `Remote-Email`、`Remote-Name`，前端显示用 |
-| GET | `/api/settings` | 返回全局 `autoCompactBeforeExpiry` 开关，有效缺省 false。 |
-| PATCH | `/api/settings` | 仅接受布尔 `autoCompactBeforeExpiry`，沿用身份和 Origin 校验；保存后更新调度，失败保留旧设置。 |
+| GET | `/api/settings` | 返回未单独设置会话的 `autoCompactBeforeExpiry` 默认值，有效缺省 false。 |
+| PATCH | `/api/settings` | 仅接受布尔 `autoCompactBeforeExpiry`，修改默认值，已单独设置的会话不变；保存失败保留旧值。 |
+| GET | `/api/sessions/:id/settings` | 校验会话和工作区，返回当前会话的有效 `autoCompactBeforeExpiry`，不创建 Runtime。 |
+| PATCH | `/api/sessions/:id/settings` | 仅接受布尔 `autoCompactBeforeExpiry`，校验会话、工作区、身份和 Origin；持久保存当前会话覆盖值，失败保留旧值。 |
 | GET | `/api/sessions?cwd=` | `listSessions({dir})` 合并 Runtime 状态；不带 `cwd` 时返回全部项目，按 `cwd` 分组 |
 | GET | `/api/sessions/:id/messages?offset=&limit=` | 历史消息，分页 |
 | GET | `/api/sessions/:id/usage` | 只读已有会话累计费用和 token，返回 `{usage, source}`，source 为 saved / result / unavailable。不创建或恢复 Query、不发送模型消息、不查询账号额度；没有本地统计或手动刷新时读取，面板无定时轮询，result 到达直接更新。 |
